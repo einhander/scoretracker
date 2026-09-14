@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">TempoScore</string>
+    <string name="load_midi">Load MIDI</string>
+    <string name="start_listening">Start listening</string>
+    <string name="stop_listening">Stop listening</string>
+    <string name="reset_position">Reset position</string>
+    <string name="no_midi">No MIDI loaded</string>
+    <string name="permission_required">Microphone permission is required for tempo tracking.</string>
+</resources>
