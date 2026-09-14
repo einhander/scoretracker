@@ -16,3 +16,6 @@ captures/
 .classpath
 .cproject
 .ignore
+*.jks
+*.keystore
+*.keystore.bak
