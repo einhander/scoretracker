@@ -11,3 +11,7 @@ local.properties
 *.aab
 captures/
 .slim/deepwork/
+.project
+.settings/
+.classpath
+.cproject
