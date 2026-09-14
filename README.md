@@ -50,11 +50,7 @@ or:
 ./gradlew :app:assembleDebug
 ```
 
-The archive contains a small bootstrap `gradle-wrapper.jar` so `./gradlew` can fetch Gradle 8.5 on first use. It is **not the official Gradle wrapper JAR**; after the first successful setup you may replace it with the canonical one:
-
-```bash
-gradle wrapper --gradle-version 8.5
-```
+The official Gradle 8.5 wrapper is included; `./gradlew` works out of the box (distribution is fetched on first use if not cached).
 
 ## What already exists
 
