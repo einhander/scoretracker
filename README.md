@@ -35,6 +35,9 @@ Native audio uses **Oboe 1.10.0 through Maven Prefab**. FluidSynth and external 
 
 1. Install JDK 17, Android SDK platform 34, NDK `26.1.10909125`, and CMake `3.22.1`.
 2. Copy `local.properties.template` to `local.properties` and set `sdk.dir`.
+   For this machine, set environment:
+   `export JAVA_HOME=/home/einhander/tools/jdk-17.0.14+7`
+   `export ANDROID_HOME=/home/einhander/tools/android-sdk` and `export ANDROID_SDK_ROOT=/home/einhander/tools/android-sdk`
 3. Run:
 
 ```bash
