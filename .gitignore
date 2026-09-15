@@ -19,3 +19,4 @@ captures/
 *.jks
 *.keystore
 *.keystore.bak
+.playwright-mcp/
