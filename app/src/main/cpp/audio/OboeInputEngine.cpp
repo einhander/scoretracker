@@ -46,10 +46,13 @@ bool OboeInputEngine::start() {
         if (!openStream(oboe::InputPreset::VoiceRecognition)) return false;
     }
 
+    ring_.reset();
+    if (!analyzer_.start(sampleRate_)) return false;
     const oboe::Result result = stream_->requestStart();
     if (result != oboe::Result::OK) {
         stream_->close();
         stream_.reset();
+        analyzer_.stop();
         return false;
     }
 
@@ -64,6 +67,7 @@ void OboeInputEngine::stop() {
         stream_->close();
         stream_.reset();
     }
+    analyzer_.stop();
 }
 
 void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
@@ -86,6 +90,8 @@ oboe::DataCallbackResult OboeInputEngine::onAudioReady(oboe::AudioStream* /*audi
     const auto* input = static_cast<const float*>(audioData);
     const BeatObservation observation = beatTracker_.process(input, numFrames, channelCount_);
     transport_.processFrames(numFrames, sampleRate_, observation);
+    // Stream is configured mono, so input is contiguous mono float samples.
+    ring_.write(input, static_cast<size_t>(numFrames));
     return oboe::DataCallbackResult::Continue;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "beat/BeatTracker.h"
+#include "audio/AudioAnalyzer.h"
 #include "transport/LiveTransport.h"
 
 #include <oboe/Oboe.h>
@@ -18,6 +19,7 @@ public:
     void setExpectedBpm(double bpm) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
     TransportState state() const noexcept;
+    uint64_t framesConsumed() const noexcept { return analyzer_.framesConsumed(); }
 
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* audioStream,
                                           void* audioData,
@@ -31,6 +33,8 @@ private:
     std::shared_ptr<oboe::AudioStream> stream_;
     BeatTracker beatTracker_;
     LiveTransport transport_;
+    SpscAudioRing ring_{200000}; // ~4.1 s mono at 48 kHz; allocated before start.
+    AudioAnalyzer analyzer_{ring_};
     double expectedBpm_ = 120.0;
     int32_t sampleRate_ = 48000;
     int32_t channelCount_ = 1;

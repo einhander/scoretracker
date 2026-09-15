@@ -5,9 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+if(ANDROID)
 add_library(temposcore_native SHARED
     native_audio_jni.cpp
     audio/OboeInputEngine.cpp
+    audio/SpscAudioRing.cpp
+    audio/AudioAnalyzer.cpp
     beat/BeatTracker.cpp
     transport/LiveTransport.cpp
 )
@@ -22,3 +25,15 @@ target_link_libraries(temposcore_native
     oboe::oboe
     ${log-lib}
 )
+endif()
+
+if(NOT ANDROID)
+    enable_testing()
+    set(TEMPOSCORE_HOST_TEST_SOURCES
+        audio/SpscAudioRing.cpp
+        tests/host/test_spsc_ring.cpp
+    )
+    add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
+    target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME host_tests COMMAND temposcore_host_tests)
+endif()
