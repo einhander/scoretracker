@@ -13,6 +13,7 @@ object NativeAudioBridge {
     external fun stop()
     external fun setExpectedBpm(bpm: Double)
     external fun resetPosition(startQuarterBeat: Double)
+    external fun setScoreReference(ppq: Int, totalTicks: Long, noteChannels: IntArray, notePitches: IntArray, noteVelocities: IntArray, noteStarts: LongArray, noteEnds: LongArray, tempoTicks: LongArray, tempoValues: IntArray)
     private external fun getStateRaw(): DoubleArray
 
     fun state(): TransportSnapshot {

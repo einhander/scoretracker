@@ -15,6 +15,9 @@ add_library(temposcore_native SHARED
     dsp/Stft.cpp
     dsp/Chroma.cpp
     dsp/SpectralFlux.cpp
+    position/ScoreReference.cpp
+    position/FeatureRing.cpp
+    position/DtwMatcher.cpp
     beat/BeatTracker.cpp
     transport/LiveTransport.cpp
 )
@@ -39,6 +42,9 @@ if(NOT ANDROID)
         dsp/Stft.cpp
         dsp/Chroma.cpp
         dsp/SpectralFlux.cpp
+        position/ScoreReference.cpp
+        position/FeatureRing.cpp
+        position/DtwMatcher.cpp
         tests/host/test_spsc_ring.cpp
         tests/host/test_main.cpp
         tests/host/test_fft.cpp
@@ -46,6 +52,7 @@ if(NOT ANDROID)
         tests/host/test_chroma.cpp
         tests/host/test_flux.cpp
         tests/host/test_feature_pipeline.cpp
+        tests/host/test_position.cpp
     )
     add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
     target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
