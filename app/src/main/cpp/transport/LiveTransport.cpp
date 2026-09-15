@@ -34,6 +34,14 @@ void LiveTransport::setExpectedBpm(double expectedBpm) noexcept {
 void LiveTransport::setRunning(bool running) noexcept {
     running_.store(running, std::memory_order_release);
 }
+void LiveTransport::submitPositionObservation(const PositionObservation&o) noexcept {
+    if (!o.valid) return; // only a confident match sets a correction target
+    targetPosition_.store(o.quarterBeatPosition,std::memory_order_relaxed);
+    targetConfidence_.store(o.confidence,std::memory_order_relaxed);
+    targetAmbiguity_.store(o.ambiguityMargin,std::memory_order_relaxed);
+    targetGlobal_.store(o.globalMatch,std::memory_order_relaxed);
+    targetActive_.store(true,std::memory_order_release);
+}
 
 void LiveTransport::processFrames(int32_t numFrames,
                                   int32_t sampleRate,
@@ -61,6 +69,40 @@ void LiveTransport::processFrames(int32_t numFrames,
                                expectedBpmRt_ * 1.80);
 
     positionRt_ += (currentBpmRt_ / 60.0) * (static_cast<double>(numFrames) / sampleRate);
+    if (targetActive_.load(std::memory_order_acquire)) {
+        const double target = targetPosition_.load(std::memory_order_relaxed);
+        const double conf = targetConfidence_.load(std::memory_order_relaxed);
+        const double ambig = targetAmbiguity_.load(std::memory_order_relaxed);
+        const bool isGlobal = targetGlobal_.load(std::memory_order_relaxed);
+        const double error = target - positionRt_;
+        const double a = std::abs(error);
+        const bool strong = conf >= .88 && ambig < .05;
+        if (a < .5) {
+            // Converged: snap the remainder and retire the target.
+            positionRt_ += error;
+            targetActive_.store(false, std::memory_order_relaxed);
+        } else if (a <= 4) {
+            // Rate-limited slew toward the target on EVERY callback: the slew
+            // is capped at 0.4 beat/s and decays with the remaining error
+            // (P-control: 10% of the error per second, capped at 0.4 beat/s).
+            // The target persists until the cursor reaches it, so the slew is
+            // applied every callback (not once per ~2 s observation, which would
+            // be ~200x too slow). The total approach is faster at normal BPM
+            // because the frame-driven advance also moves the cursor.
+            const double dt = static_cast<double>(numFrames) / sampleRate;
+            const double rate = std::min(0.4, 0.1 * a);
+            positionRt_ += std::clamp(error, -rate * dt, rate * dt);
+        } else if (strong || (isGlobal && conf >= 0.5)) {
+            // Hard relocation: a large error is applied only for a strong
+            // (high-confidence, low-ambiguity) match or a confident initial
+            // global lock. An ambiguous large error is rejected (no false jump).
+            positionRt_ += error;
+            targetActive_.store(false, std::memory_order_relaxed);
+        } else {
+            // Large + ambiguous: reject the target (do not jump).
+            targetActive_.store(false, std::memory_order_relaxed);
+        }
+    }
     if (observation.phaseValid && observation.confidence > 0.18f) {
         positionRt_ += observation.phaseCorrectionBeats;
     }

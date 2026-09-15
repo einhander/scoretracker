@@ -18,6 +18,7 @@ add_library(temposcore_native SHARED
     position/ScoreReference.cpp
     position/FeatureRing.cpp
     position/DtwMatcher.cpp
+    position/PositionMatcher.cpp
     beat/BeatTracker.cpp
     transport/LiveTransport.cpp
 )
@@ -45,6 +46,9 @@ if(NOT ANDROID)
         position/ScoreReference.cpp
         position/FeatureRing.cpp
         position/DtwMatcher.cpp
+        position/PositionMatcher.cpp
+        beat/BeatTracker.cpp
+        transport/LiveTransport.cpp
         tests/host/test_spsc_ring.cpp
         tests/host/test_main.cpp
         tests/host/test_fft.cpp
@@ -53,6 +57,7 @@ if(NOT ANDROID)
         tests/host/test_flux.cpp
         tests/host/test_feature_pipeline.cpp
         tests/host/test_position.cpp
+        tests/host/test_position_matcher.cpp
     )
     add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
     target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

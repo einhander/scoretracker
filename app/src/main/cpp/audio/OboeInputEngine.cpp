@@ -47,6 +47,7 @@ bool OboeInputEngine::start() {
     }
 
     ring_.reset();
+    if (matcher_) matcher_->begin(); // fresh acquisition on each start
     if (!analyzer_.start(sampleRate_)) return false;
     const oboe::Result result = stream_->requestStart();
     if (result != oboe::Result::OK) {
@@ -78,6 +79,13 @@ void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
 
 void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
     transport_.resetPosition(startQuarterBeat);
+}
+
+void OboeInputEngine::setScoreReference(const MidiData& data) noexcept {
+    buildScoreReference(data, reference_);
+    matcher_.reset(new PositionMatcher(reference_));
+    // Wire the slow-loop follower into the analyzer (main thread, before start).
+    analyzer_.configureMatcher(matcher_.get(), &transport_);
 }
 
 TransportState OboeInputEngine::state() const noexcept {

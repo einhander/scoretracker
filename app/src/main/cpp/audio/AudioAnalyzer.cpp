@@ -8,6 +8,8 @@ bool AudioAnalyzer::start(int32_t sampleRate) {
     if (running_.exchange(true, std::memory_order_acq_rel)) return false;
     framesConsumed_.store(0, std::memory_order_relaxed);
     nextGridCenter_ = 2048;
+    featureRing_.clear();
+    lastMatcherCenter_ = 0;
     stft_ = std::make_unique<Stft>(sampleRate);
     chroma_ = std::make_unique<ChromaExtractor>(sampleRate);
     flux_ = std::make_unique<SpectralFlux>(sampleRate);
@@ -37,6 +39,17 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
                 latestFeature_ = frame; // only analyzer writes; readers use sequence protocol.
                 featureSequence_.fetch_add(1, std::memory_order_release);
                 nextGridCenter_ = center + stft_->sampleRate() / 10;
+                // Slow-loop score following (analyzer thread, non-RT): accumulate the
+                // 10 Hz feature frame and run the PositionMatcher on a ~2 s
+                // feature-time (sample-frame) cadence, NOT a wall clock or UI timer.
+                featureRing_.push(frame);
+                if (matcher_ && transport_ &&
+                    center - lastMatcherCenter_ >= 2 * static_cast<int64_t>(stft_->sampleRate())) {
+                    const double predicted = transport_->snapshot().quarterBeatPosition;
+                    const PositionObservation obs = matcher_->update(featureRing_, predicted);
+                    transport_->submitPositionObservation(obs);
+                    lastMatcherCenter_ = center;
+                }
             }
         }
         else {

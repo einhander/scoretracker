@@ -1,6 +1,7 @@
 #pragma once
 
 #include "beat/BeatTracker.h"
+#include "position/DtwMatcher.h"
 
 #include <atomic>
 #include <cstdint>
@@ -22,6 +23,7 @@ public:
     void resetPosition(double startQuarterBeat) noexcept;
     void setExpectedBpm(double expectedBpm) noexcept;
     void setRunning(bool running) noexcept;
+    void submitPositionObservation(const PositionObservation&) noexcept;
     void processFrames(int32_t numFrames,
                        int32_t sampleRate,
                        const BeatObservation& observation) noexcept;
@@ -43,6 +45,13 @@ private:
     std::atomic<double> publishedConfidence_{0.0};
     std::atomic<double> publishedRms_{0.0};
     std::atomic<bool> running_{false};
+    // Persistent position-correction target (single writer = analyzer thread via
+    // submitPositionObservation, single reader = processFrames on the Oboe
+    // callback). The target stays active and is slewed toward on EVERY callback
+    // (rate-limited) until the cursor reaches it (|err|<0.5) or it is rejected
+    // (large + ambiguous). targetActive_ is the release/acquire handshake.
+    std::atomic<double> targetPosition_{0.0}, targetConfidence_{0.0}, targetAmbiguity_{1.0};
+    std::atomic<bool> targetActive_{false}, targetGlobal_{false};
 };
 
 } // namespace temposcore

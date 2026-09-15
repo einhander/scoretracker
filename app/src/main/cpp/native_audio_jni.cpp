@@ -6,7 +6,6 @@
 
 namespace {
 temposcore::OboeInputEngine gEngine;
-temposcore::ScoreReference gReference;
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -68,5 +67,5 @@ Java_com_einhander_temposcore_NativeAudioBridge_setScoreReference(
     const jsize tn=env->GetArrayLength(tempoTicks); std::vector<jlong> tt(tn); std::vector<jint> tv(tn);
     env->GetLongArrayRegion(tempoTicks,0,tn,tt.data()); env->GetIntArrayRegion(tempoValues,0,tn,tv.data());
     data.tempos.resize(tn);for(jsize i=0;i<tn;++i)data.tempos[i]={tt[i],tv[i]};
-    temposcore::buildScoreReference(data,gReference);
+    gEngine.setScoreReference(data);
 }
