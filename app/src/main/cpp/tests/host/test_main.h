@@ -11,4 +11,3 @@ inline int failures = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #c); ++failures; } } while (0)
 #define CHECK_NEAR(a,b,e) CHECK(std::fabs((a)-(b)) <= (e))
 #define REGISTER_TEST(f) static Registrar registrar_##f(#f, f)
-int main() { for (const auto& t : tests()) t.fn(); return failures ? 1 : 0; }

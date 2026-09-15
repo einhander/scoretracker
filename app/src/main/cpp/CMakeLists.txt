@@ -11,6 +11,10 @@ add_library(temposcore_native SHARED
     audio/OboeInputEngine.cpp
     audio/SpscAudioRing.cpp
     audio/AudioAnalyzer.cpp
+    dsp/Fft.cpp
+    dsp/Stft.cpp
+    dsp/Chroma.cpp
+    dsp/SpectralFlux.cpp
     beat/BeatTracker.cpp
     transport/LiveTransport.cpp
 )
@@ -31,7 +35,17 @@ if(NOT ANDROID)
     enable_testing()
     set(TEMPOSCORE_HOST_TEST_SOURCES
         audio/SpscAudioRing.cpp
+        dsp/Fft.cpp
+        dsp/Stft.cpp
+        dsp/Chroma.cpp
+        dsp/SpectralFlux.cpp
         tests/host/test_spsc_ring.cpp
+        tests/host/test_main.cpp
+        tests/host/test_fft.cpp
+        tests/host/test_hann.cpp
+        tests/host/test_chroma.cpp
+        tests/host/test_flux.cpp
+        tests/host/test_feature_pipeline.cpp
     )
     add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
     target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
