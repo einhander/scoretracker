@@ -1,28 +1,49 @@
 # Architecture
 
 ```text
-                         MIDI file
-                            |
-             +--------------+---------------+
-             |                              |
-       MidiFileParser                  score model
- tempo map / meter / notes                 |
-             |                              v
-             |                        ScoreStaffView
-             |                      Now / Next notes
-             v                              ^
-      expected tempo prior                  |
-             |                              |
-             v                              |
+                          MIDI file
+                             |
+              +--------------+---------------+
+              |                              |
+        MidiFileParser                  score model
+  tempo map / meter / notes                 |
+              |                              v
+              |                        ScoreStaffView
+              |                      Now / Next notes
+              v                              ^
+       expected tempo prior                  |
+              |                              |
+              v                              |
 Microphone -> Oboe -> beat tracker -> LiveTransport
-             C++         C++             C++
-                         |                |
-                         +-------> TransportState
-                                      atomics
-                                        |
-                                       JNI
-                                        |
-                                      Kotlin
+              C++         C++             C++
+                          |                |
+                          +-------> TransportState
+                                       atomics
+                                         |
+                                        JNI
+                                         |
+                                       Kotlin
+
+  Score following (slow loop, analyzer thread — never the RT callback):
+
+  Oboe callback --(SPSC ring)--> AudioAnalyzer (STFT/chroma/spectral-flux @ 10 Hz)
+                                       |
+                                       v
+                              FeatureRing (200 frames = 20 s live context)
+                                       |   ~2 s feature-time cadence
+                                       v
+                              PositionMatcher (state machine)
+                                - DtwMatcher: global acquisition + local correction
+                                - confidence = dtw x validFraction x stability
+                                - Acquiring -> Locked -> Weak -> Reacquiring
+                                       |  PositionObservation
+                                       v
+                              LiveTransport.submitPositionObservation
+                                - slew (small error) / hard relocate (large, gated)
+                                - publishes positionConfidence / matchedPosition /
+                                  error / state / ambiguity / validContextSeconds
+                                       |
+                              TransportState atomics -> JNI -> Kotlin UI
 ```
 
 ## Layer ownership
@@ -47,6 +68,20 @@ The live transport has separate concepts:
 - `quarterBeatPosition`: continuously integrated score position;
 - `confidence`: beat tracker confidence.
 
-## Fundamental limitation
+## Score following
 
-Beat/tempo analysis alone does not identify an absolute song section. If two measures share the same pulse, microphone BPM cannot tell measure 12 from measure 72. Therefore the user starts from the beginning or chooses a known starting measure. Recovery from arbitrary jumps/repeats requires either manual repositioning or future content-aware score following, which is outside the base scope.
+Beat/tempo analysis alone does not identify an absolute song section: if two measures share the
+same pulse, microphone BPM cannot tell measure 12 from measure 72. TempoScore therefore runs a
+**content-aware score follower** on the analyzer thread. It matches the live audio (chroma +
+spectral flux) against the MIDI score with a constrained DTW, acquires the absolute position
+globally (top-K coarse pass + fine DTW), then tracks it locally with a bounded continuity prior.
+Repeats and ambiguous passages are handled by preferring a non-neighbour second-best candidate and
+by a confidence/ambiguity margin; when the match degrades the state machine falls back to
+`Weak`/`Reacquiring` rather than silently jumping to the wrong section.
+
+The live transport is corrected by the follower: small position errors are slewed in (bounded
+rate), large errors are hard-relocated only when the match is strong (or a confident global
+re-acquisition). The user can also reposition with Reset (a fresh global acquisition).
+
+The matcher runs on the analyzer thread at a ~2 s feature-time cadence — **never** in the Oboe
+real-time callback (see `docs/realtime-rules.md`).

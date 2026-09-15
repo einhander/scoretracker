@@ -34,7 +34,28 @@ void LiveTransport::setExpectedBpm(double expectedBpm) noexcept {
 void LiveTransport::setRunning(bool running) noexcept {
     running_.store(running, std::memory_order_release);
 }
-void LiveTransport::submitPositionObservation(const PositionObservation&o) noexcept {
+void LiveTransport::publishIdle() noexcept {
+    // Stop (spec §30): the score follower is no longer active. Publish Idle and
+    // clear the position diagnostics so the UI does not show a stale state.
+    publishedPositionState_.store(0,std::memory_order_relaxed);
+    publishedPositionConfidence_.store(0.0,std::memory_order_relaxed);
+    publishedPositionError_.store(0.0,std::memory_order_relaxed);
+    publishedAmbiguity_.store(0.0,std::memory_order_relaxed);
+    targetActive_.store(false,std::memory_order_relaxed);
+}
+
+void LiveTransport::submitPositionObservation(const PositionObservation&o, double validContextSeconds) noexcept {
+    // Always publish the latest score-following state (even when the match is
+    // not confident enough to set a correction target), so the UI can show the
+    // current state / "locating" progress.
+    publishedPositionConfidence_.store(o.confidence,std::memory_order_relaxed);
+    publishedMatchedPosition_.store(o.quarterBeatPosition,std::memory_order_relaxed);
+    // Read the published position (atomic) — not the RT positionRt_ (plain,
+    // written by the Oboe callback) — to avoid a cross-thread data race.
+    publishedPositionError_.store(o.quarterBeatPosition - publishedPosition_.load(std::memory_order_relaxed),std::memory_order_relaxed);
+    publishedPositionState_.store(static_cast<int>(o.state),std::memory_order_relaxed);
+    publishedAmbiguity_.store(o.ambiguityMargin,std::memory_order_relaxed);
+    publishedValidContextSeconds_.store(validContextSeconds,std::memory_order_relaxed);
     if (!o.valid) return; // only a confident match sets a correction target
     targetPosition_.store(o.quarterBeatPosition,std::memory_order_relaxed);
     targetConfidence_.store(o.confidence,std::memory_order_relaxed);
@@ -124,6 +145,12 @@ TransportState LiveTransport::snapshot() const noexcept {
     s.confidence = publishedConfidence_.load(std::memory_order_relaxed);
     s.rms = publishedRms_.load(std::memory_order_relaxed);
     s.running = running_.load(std::memory_order_acquire);
+    s.positionConfidence = publishedPositionConfidence_.load(std::memory_order_relaxed);
+    s.matchedQuarterBeatPosition = publishedMatchedPosition_.load(std::memory_order_relaxed);
+    s.positionErrorBeats = publishedPositionError_.load(std::memory_order_relaxed);
+    s.positionStateCode = publishedPositionState_.load(std::memory_order_relaxed);
+    s.ambiguityMargin = publishedAmbiguity_.load(std::memory_order_relaxed);
+    s.validContextSeconds = publishedValidContextSeconds_.load(std::memory_order_relaxed);
     return s;
 }
 

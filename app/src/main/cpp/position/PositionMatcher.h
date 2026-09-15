@@ -1,6 +1,7 @@
 #pragma once
 #include "position/DtwMatcher.h"
 #include <array>
+#include <atomic>
 namespace temposcore {
 // Slow-loop score-position state machine (Milestones B.3/C). Runs on the
 // analyzer thread at a ~2 s feature-time cadence (NOT the Oboe callback).
@@ -16,6 +17,9 @@ public:
         weakStreak_ = 0;
         hasLast_ = false;
     }
+    // Request a global re-acquisition from the main thread (JNI). The analyzer
+    // thread applies it on its next update() (no cross-thread state write).
+    void requestReacquire() noexcept { reacquireRequested_.store(true, std::memory_order_release); }
     PositionObservation update(const FeatureRing& f, double predicted = 0.0) noexcept;
     PositionTrackingState state() const noexcept { return state_; }
 private:
@@ -29,6 +33,7 @@ private:
     bool positionAgrees(const PositionObservation& o) const noexcept;
 
     DtwMatcher dtw_;
+    std::atomic<bool> reacquireRequested_{false}; // main thread -> analyzer thread
     PositionTrackingState state_ = PositionTrackingState::Idle;
     int stable_ = 0;       // consecutive agreeing observations (initial-lock stability)
     int weakStreak_ = 0;   // consecutive weak observations (hysteresis before Reacquiring)

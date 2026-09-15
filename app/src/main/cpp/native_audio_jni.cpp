@@ -36,19 +36,31 @@ Java_com_einhander_temposcore_NativeAudioBridge_resetPosition(
     gEngine.resetPosition(startQuarterBeat);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_requestGlobalReacquire(JNIEnv*, jobject) {
+    gEngine.requestGlobalReacquire();
+}
+
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_getStateRaw(JNIEnv* env, jobject) {
     const auto state = gEngine.state();
-    const jdouble values[6] = {
-        state.transportBpm,
-        state.detectedBpm,
-        state.quarterBeatPosition,
-        state.confidence,
-        state.rms,
-        state.running ? 1.0 : 0.0,
+    // Spec §28 semantic order (12 doubles).
+    const jdouble values[12] = {
+        state.transportBpm,               // 0
+        state.detectedBpm,                // 1
+        state.quarterBeatPosition,        // 2
+        state.confidence,                 // 3 beatConfidence
+        state.rms,                        // 4
+        state.running ? 1.0 : 0.0,        // 5
+        state.positionConfidence,         // 6
+        state.matchedQuarterBeatPosition, // 7
+        state.positionErrorBeats,         // 8
+        static_cast<jdouble>(state.positionStateCode), // 9
+        state.ambiguityMargin,            // 10
+        state.validContextSeconds,        // 11
     };
-    jdoubleArray result = env->NewDoubleArray(6);
-    if (result != nullptr) env->SetDoubleArrayRegion(result, 0, 6, values);
+    jdoubleArray result = env->NewDoubleArray(12);
+    if (result != nullptr) env->SetDoubleArrayRegion(result, 0, 12, values);
     return result;
 }
 

@@ -47,7 +47,9 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
                     center - lastMatcherCenter_ >= 2 * static_cast<int64_t>(stft_->sampleRate())) {
                     const double predicted = transport_->snapshot().quarterBeatPosition;
                     const PositionObservation obs = matcher_->update(featureRing_, predicted);
-                    transport_->submitPositionObservation(obs);
+                    // The feature ring holds up to 200 frames @ 10 Hz = 20 s of
+                    // live context; report how much of it is valid (spec §28 #11).
+                    transport_->submitPositionObservation(obs, static_cast<double>(featureRing_.size()) / 10.0);
                     lastMatcherCenter_ = center;
                 }
             }

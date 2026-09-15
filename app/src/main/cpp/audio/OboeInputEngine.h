@@ -23,6 +23,9 @@ public:
     // Build the score reference from the parsed MIDI and (re)create the
     // PositionMatcher. Called on the main thread (JNI) BEFORE start().
     void setScoreReference(const MidiData& data) noexcept;
+    // Request a global re-acquisition (main thread, JNI). The analyzer thread
+    // applies it on its next update() — no cross-thread state write.
+    void requestGlobalReacquire() noexcept { if (matcher_) matcher_->requestReacquire(); }
     TransportState state() const noexcept;
     PositionTrackingState trackingState() const noexcept {
         return matcher_ ? matcher_->state() : PositionTrackingState::Idle;

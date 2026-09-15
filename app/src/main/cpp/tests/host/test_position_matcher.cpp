@@ -135,7 +135,7 @@ void test_transport_small_direct() {
     o.ambiguityMargin = 0.5f;
     o.valid = true;
     o.globalMatch = false;
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000, silentBeat());
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 10.2);
@@ -152,7 +152,7 @@ void test_transport_medium_slew() {
     o.ambiguityMargin = 0.5f;
     o.valid = true;
     o.globalMatch = false;
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000, silentBeat()); // 10 ms
     const double pos = t.snapshot().quarterBeatPosition;
     // Slew is rate-limited: only a small step in 10 ms, not the full 3 beats.
@@ -173,7 +173,7 @@ void test_transport_slew_converges() {
     o.ambiguityMargin = 0.5f;
     o.valid = true;
     o.globalMatch = false;
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     for (int i = 0; i < 150; ++i) t.processFrames(480, 48000, silentBeat()); // ~1.5 s
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 12.0); // converged toward the target (13.0)
@@ -190,7 +190,7 @@ void test_transport_large_ambiguous_no_jump() {
     o.ambiguityMargin = 0.3f; // ambiguous (>= 0.05)
     o.valid = true;
     o.globalMatch = false;
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000, silentBeat());
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos < 12.0); // did not jump to 20
@@ -206,7 +206,7 @@ void test_transport_large_strong_applied() {
     o.ambiguityMargin = 0.02f; // low ambiguity (< 0.05)
     o.valid = true;
     o.globalMatch = false;
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000, silentBeat());
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0); // jumped to ~20
@@ -222,7 +222,7 @@ void test_transport_global_lock_applied() {
     o.ambiguityMargin = 0.3f; // ambiguous, but...
     o.valid = true;
     o.globalMatch = true; // ...it is the initial global lock
-    t.submitPositionObservation(o);
+    t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000, silentBeat());
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0);

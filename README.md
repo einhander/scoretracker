@@ -11,7 +11,9 @@ Important product constraints:
 - **no pitch/note recognition from audio**;
 - MIDI supplies notes, time signatures and the initial/reference tempo;
 - audio supplies rhythmic evidence (onsets / beat / tempo / phase);
-- absolute song position is initialized by the app/user and then tracked continuously; pure beat tracking cannot identify a song section after an arbitrary jump.
+- absolute song position is acquired by **content-aware score following** (matching the live
+  audio against the MIDI score) and then tracked continuously; the user can start from the
+  beginning or reposition with Reset.
 
 ## Toolchain
 
@@ -64,13 +66,25 @@ The official Gradle 8.5 wrapper is included; `./gradlew` works out of the box (d
 - Oboe low-latency microphone input;
 - lightweight energy-onset + MIDI-prior BPM bootstrap tracker;
 - smoothed transport BPM and basic PLL-like phase correction;
-- JVM parser regression test.
+- **content-aware score following**: STFT/chroma/spectral-flux feature analysis, a constrained
+  DTW matcher (global acquisition + local correction + repeat disambiguation), and a
+  position-tracking state machine (`Acquiring → Locked → Weak → Reacquiring`) that corrects the
+  live transport;
+- tempo-map integration (Kotlin `tempoAtQuarterBeat` / `quarterBeatToSeconds` / `secondsToQuarterBeat`);
+- JVM parser + tempo-map regression tests; host C++ unit tests (ring, DSP, DTW matcher, position
+  state machine, transport correction policy).
 
 ## What is deliberately not production-ready
 
 The current `BeatTracker` is only an architectural bootstrap. It uses energy rises, not robust multiband spectral flux, and will fail on many real musical passages. The proper tracker is described in `SPEC.md` and `AGENT_INSTRUCTIONS.md`.
 
 Likewise, `ScoreStaffView` is a visualization placeholder, not a notation engraver. Proper clefs, accidentals, voices, beams, ties, rhythmic quantization and multi-staff layout belong to a later milestone.
+
+The score-following matcher is a first production pass: it is tuned for the common case (a
+recognizable ensemble, a MIDI that matches the live material) and degrades to `Weak`/`Reacquiring`
+rather than silently jumping to the wrong section. Live-audio acceptance is manual (no emulator on
+the build machine); the matcher is covered by host C++ unit tests and the transport correction
+policy by deterministic host tests.
 
 ## Key files
 
@@ -79,5 +93,11 @@ Likewise, `ScoreStaffView` is a visualization placeholder, not a notation engrav
 - `docs/architecture.md` — component and threading model.
 - `docs/realtime-rules.md` — hard real-time rules.
 - `app/src/main/cpp/beat/BeatTracker.*` — replaceable beat-tracking prototype.
-- `app/src/main/cpp/audio/OboeInputEngine.*` — microphone backend.
-- `app/src/main/cpp/transport/LiveTransport.*` — musical transport.
+- `app/src/main/cpp/audio/OboeInputEngine.*` — microphone backend (owns the score reference + matcher).
+- `app/src/main/cpp/audio/AudioAnalyzer.*` — non-RT feature analysis (STFT/chroma/flux) + matcher cadence.
+- `app/src/main/cpp/dsp/*` — radix-2 FFT, STFT, chroma, spectral flux (own minimal DSP, no third-party).
+- `app/src/main/cpp/position/DtwMatcher.*` — constrained DTW (global/local) + repeat disambiguation.
+- `app/src/main/cpp/position/PositionMatcher.*` — position-tracking state machine + confidence policy.
+- `app/src/main/cpp/transport/LiveTransport.*` — musical transport + position correction (slew/relocate).
+- `app/src/main/cpp/native_audio_jni.cpp` — JNI boundary (12-field state, score reference, reacquire).
+- `app/src/main/cpp/tests/host/*` — host C++ unit tests (run via CTest, no GTest).

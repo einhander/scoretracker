@@ -9,12 +9,20 @@
 namespace temposcore {
 
 struct TransportState {
+    // Beat/transport loop (fast).
     double transportBpm = 120.0;
     double detectedBpm = 0.0;
     double quarterBeatPosition = 0.0;
-    double confidence = 0.0;
+    double confidence = 0.0; // beat confidence
     double rms = 0.0;
     bool running = false;
+    // Score-following loop (slow) — spec §28 fields 6-11.
+    double positionConfidence = 0.0;
+    double matchedQuarterBeatPosition = 0.0;
+    double positionErrorBeats = 0.0;
+    int positionStateCode = 0; // PositionTrackingState as int (0..4)
+    double ambiguityMargin = 0.0;
+    double validContextSeconds = 0.0;
 };
 
 class LiveTransport {
@@ -23,7 +31,13 @@ public:
     void resetPosition(double startQuarterBeat) noexcept;
     void setExpectedBpm(double expectedBpm) noexcept;
     void setRunning(bool running) noexcept;
-    void submitPositionObservation(const PositionObservation&) noexcept;
+    // Publish an Idle score-following state (main thread, on stop) so the UI
+    // does not keep showing a stale LOCKED/Weak state after Stop (spec §30).
+    void publishIdle() noexcept;
+    // Publish the latest score-following observation (analyzer thread). The
+    // validContextSeconds is the number of valid seconds in the live feature
+    // window (spec §28 field 11); the analyzer owns the FeatureRing.
+    void submitPositionObservation(const PositionObservation&, double validContextSeconds) noexcept;
     void processFrames(int32_t numFrames,
                        int32_t sampleRate,
                        const BeatObservation& observation) noexcept;
@@ -45,6 +59,13 @@ private:
     std::atomic<double> publishedConfidence_{0.0};
     std::atomic<double> publishedRms_{0.0};
     std::atomic<bool> running_{false};
+    // Published score-following state (spec §28 fields 6-11).
+    std::atomic<double> publishedPositionConfidence_{0.0};
+    std::atomic<double> publishedMatchedPosition_{0.0};
+    std::atomic<double> publishedPositionError_{0.0};
+    std::atomic<int> publishedPositionState_{0};
+    std::atomic<double> publishedAmbiguity_{0.0};
+    std::atomic<double> publishedValidContextSeconds_{0.0};
     // Persistent position-correction target (single writer = analyzer thread via
     // submitPositionObservation, single reader = processFrames on the Oboe
     // callback). The target stays active and is slewed toward on EVERY callback

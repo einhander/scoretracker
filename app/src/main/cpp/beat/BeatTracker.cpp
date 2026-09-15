@@ -6,8 +6,9 @@
 namespace temposcore {
 
 void BeatTracker::configure(double expectedBpm, int32_t sampleRate) noexcept {
-    expectedBpm_ = std::clamp(expectedBpm, 30.0, 300.0);
-    estimatedBpm_ = expectedBpm_;
+    const double clamped = std::clamp(expectedBpm, 30.0, 300.0);
+    expectedBpm_.store(clamped, std::memory_order_relaxed);
+    estimatedBpm_ = clamped;
     sampleRate_ = std::max(sampleRate, 8000);
     framePosition_ = 0;
     lastOnsetFrame_ = -1;
@@ -17,10 +18,18 @@ void BeatTracker::configure(double expectedBpm, int32_t sampleRate) noexcept {
     confidence_ = 0.0f;
 }
 
+void BeatTracker::setExpectedBpm(double bpm) noexcept {
+    // Non-resetting: only the prior changes; the running beat PLL (phase,
+    // confidence, estimated bpm) is preserved. Safe from the main thread while
+    // the Oboe callback runs (expectedBpm_ is atomic).
+    expectedBpm_.store(std::clamp(bpm, 30.0, 300.0), std::memory_order_relaxed);
+}
+
 double BeatTracker::normaliseCandidateBpm(double bpm) const noexcept {
+    const double expected = expectedBpm_.load(std::memory_order_relaxed);
     if (!(bpm > 0.0)) return 0.0;
-    while (bpm < expectedBpm_ * 0.67) bpm *= 2.0;
-    while (bpm > expectedBpm_ * 1.50) bpm *= 0.5;
+    while (bpm < expected * 0.67) bpm *= 2.0;
+    while (bpm > expected * 1.50) bpm *= 0.5;
     return bpm;
 }
 
@@ -30,6 +39,7 @@ BeatObservation BeatTracker::process(const float* data,
     BeatObservation out;
     if (data == nullptr || numFrames <= 0 || channelCount <= 0) return out;
 
+    const double expected = expectedBpm_.load(std::memory_order_relaxed);
     double sumSquares = 0.0;
     const int64_t sampleCount = static_cast<int64_t>(numFrames) * channelCount;
     for (int64_t i = 0; i < sampleCount; ++i) {
@@ -57,7 +67,7 @@ BeatObservation BeatTracker::process(const float* data,
             if (delta > 0) {
                 double candidate = 60.0 * static_cast<double>(sampleRate_) / static_cast<double>(delta);
                 candidate = normaliseCandidateBpm(candidate);
-                if (candidate >= expectedBpm_ * 0.55 && candidate <= expectedBpm_ * 1.80) {
+                if (candidate >= expected * 0.55 && candidate <= expected * 1.80) {
                     estimatedBpm_ = 0.86 * estimatedBpm_ + 0.14 * candidate;
                     confidence_ = std::min(1.0f, confidence_ + 0.10f);
                     out.tempoValid = true;

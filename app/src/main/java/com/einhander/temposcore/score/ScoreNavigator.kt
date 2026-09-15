@@ -81,4 +81,55 @@ object ScoreNavigator {
 
     fun noteList(notes: List<MidiNote>): String =
         if (notes.isEmpty()) "—" else notes.joinToString(" ") { pitchName(it.pitch) }
+
+    // --- Tempo map (spec §26) -------------------------------------------------
+
+    /** BPM in force at the given quarter-beat position (last tempo event at or before it). */
+    fun tempoAtQuarterBeat(score: MidiScore, position: Double): Double {
+        val tick = (position * score.ppq).toLong()
+        var bpm = score.initialBpm
+        for (event in score.tempoMap.sortedBy { it.tick }) {
+            if (event.tick <= tick) bpm = event.bpm else break
+        }
+        return bpm
+    }
+
+    /** Nominal (reference) seconds for a quarter-beat position, integrating the tempo map. */
+    fun quarterBeatToSeconds(score: MidiScore, position: Double): Double {
+        if (position <= 0.0) return 0.0
+        val targetTick = position * score.ppq
+        var seconds = 0.0
+        var prevTick = 0L
+        var prevBpm = score.initialBpm
+        for (event in score.tempoMap.sortedBy { it.tick }) {
+            if (event.tick >= targetTick) break
+            val prevQuarter = score.tickToQuarterBeats(prevTick)
+            val eventQuarter = score.tickToQuarterBeats(event.tick)
+            seconds += (eventQuarter - prevQuarter) * 60.0 / prevBpm
+            prevTick = event.tick
+            prevBpm = event.bpm
+        }
+        val prevQuarter = score.tickToQuarterBeats(prevTick)
+        seconds += (position - prevQuarter) * 60.0 / prevBpm
+        return seconds
+    }
+
+    /** Quarter-beat position for a nominal (reference) seconds value (inverse of [quarterBeatToSeconds]). */
+    fun secondsToQuarterBeat(score: MidiScore, seconds: Double): Double {
+        if (seconds <= 0.0) return 0.0
+        var remaining = seconds
+        var prevTick = 0L
+        var prevBpm = score.initialBpm
+        for (event in score.tempoMap.sortedBy { it.tick }) {
+            val prevQuarter = score.tickToQuarterBeats(prevTick)
+            val eventQuarter = score.tickToQuarterBeats(event.tick)
+            val segmentSeconds = (eventQuarter - prevQuarter) * 60.0 / prevBpm
+            if (remaining <= segmentSeconds) return prevQuarter + remaining * prevBpm / 60.0
+            remaining -= segmentSeconds
+            prevTick = event.tick
+            prevBpm = event.bpm
+        }
+        val prevQuarter = score.tickToQuarterBeats(prevTick)
+        return prevQuarter + remaining * prevBpm / 60.0
+    }
 }

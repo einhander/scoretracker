@@ -21,7 +21,10 @@ import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
+import com.einhander.temposcore.transport.PositionTrackingState
+import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
+import kotlin.math.abs
 
 class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     private lateinit var binding: ActivityMainBinding
@@ -60,7 +63,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         }
 
         binding.resetButton.setOnClickListener {
-            if (nativeInitialized) NativeAudioBridge.resetPosition(0.0)
+            if (!nativeInitialized) return@setOnClickListener
+            NativeAudioBridge.resetPosition(0.0)
+            // Reset means a fresh acquisition (spec §30): the analyzer thread
+            // applies the request on its next update — no cross-thread state write.
+            NativeAudioBridge.requestGlobalReacquire()
         }
 
         binding.trackSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -124,6 +131,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
                     binding.listenButton.isEnabled = true
                     binding.resetButton.isEnabled = true
                     configureNativeEngine()
+                    sendScoreReferenceToNative(parsed)
                     updateUiFromTransport()
                 }
             } catch (t: Throwable) {
@@ -166,6 +174,22 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         }
     }
 
+    /** Push the parsed MIDI to the native score reference (all tracks, spec §17). */
+    private fun sendScoreReferenceToNative(parsed: MidiScore) {
+        val notes = parsed.notes
+        NativeAudioBridge.setScoreReference(
+            ppq = parsed.ppq,
+            totalTicks = parsed.totalTicks,
+            noteChannels = notes.map { it.channel }.toIntArray(),
+            notePitches = notes.map { it.pitch }.toIntArray(),
+            noteVelocities = notes.map { it.velocity }.toIntArray(),
+            noteStarts = notes.map { it.startTick }.toLongArray(),
+            noteEnds = notes.map { it.endTick }.toLongArray(),
+            tempoTicks = parsed.tempoMap.map { it.tick }.toLongArray(),
+            tempoValues = parsed.tempoMap.map { it.microsecondsPerQuarter }.toIntArray(),
+        )
+    }
+
     private fun ensureMicAndStart() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startListening()
@@ -200,6 +224,14 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         val now = ScoreNavigator.soundingNotes(localScore, visibleNotes, pos)
         val next = ScoreNavigator.nextNotes(localScore, visibleNotes, pos)
 
+        // Tempo map (spec §26): update the native expected BPM only when the
+        // transport crosses a tempo region — not on every frame.
+        val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, pos)
+        if (abs(regionBpm - expectedBpm) > 0.5) {
+            expectedBpm = regionBpm
+            if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm)
+        }
+
         binding.scoreView.quarterBeatPosition = pos
         binding.tempoText.text = String.format(
             Locale.US,
@@ -218,8 +250,21 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         )
         binding.nowText.text = "Now: ${ScoreNavigator.noteList(now)}"
         binding.nextText.text = "Next: ${ScoreNavigator.noteList(next)}"
-        binding.confidenceText.text = String.format(Locale.US, "Confidence: %.0f%%", state.confidence * 100.0)
+        // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
+        binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
+        binding.positionStatusText.text = formatPositionStatus(state)
         binding.listenButton.text = if (state.running) getString(R.string.stop_listening) else getString(R.string.start_listening)
+    }
+
+    private fun formatPositionStatus(state: TransportSnapshot): String = when (state.positionState) {
+        PositionTrackingState.Idle -> "Position: idle"
+        PositionTrackingState.Acquiring ->
+            "Position: locating ${String.format(Locale.US, "%.1f", state.validContextSeconds)}/20 s"
+        PositionTrackingState.Locked ->
+            "Position: LOCKED ${String.format(Locale.US, "%.0f", state.positionConfidence * 100.0)}% | " +
+                "error ${String.format(Locale.US, "%+.2f", state.positionErrorBeats)} beat"
+        PositionTrackingState.Weak -> "Position: weak — reacquiring"
+        PositionTrackingState.Reacquiring -> "Position: reacquiring"
     }
 
     private fun displayName(uri: Uri): String? {

@@ -58,6 +58,7 @@ if(NOT ANDROID)
         tests/host/test_feature_pipeline.cpp
         tests/host/test_position.cpp
         tests/host/test_position_matcher.cpp
+        tests/host/test_beat_tracker.cpp
     )
     add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
     target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

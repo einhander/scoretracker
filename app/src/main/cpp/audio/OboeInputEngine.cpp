@@ -62,19 +62,24 @@ bool OboeInputEngine::start() {
 }
 
 void OboeInputEngine::stop() {
+    // Join the analyzer FIRST: no further submitPositionObservation can land
+    // after this, so the Idle state published below is the final one (gate-5 m8).
+    analyzer_.stop();
     transport_.setRunning(false);
+    transport_.publishIdle(); // spec §30: Stop -> tracking state Idle
     if (stream_) {
         stream_->requestStop();
         stream_->close();
         stream_.reset();
     }
-    analyzer_.stop();
 }
 
 void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
     expectedBpm_ = std::clamp(bpm, 30.0, 300.0);
     transport_.setExpectedBpm(expectedBpm_);
-    beatTracker_.configure(expectedBpm_, sampleRate_);
+    // Non-resetting: safe to call while the stream is running (tempo-region
+    // crossing). The full beat-PLL reset happens in initialize()/openStream().
+    beatTracker_.setExpectedBpm(expectedBpm_);
 }
 
 void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {

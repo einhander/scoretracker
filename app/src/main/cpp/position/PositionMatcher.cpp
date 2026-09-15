@@ -48,6 +48,9 @@ PositionObservation PositionMatcher::trackLocal(const FeatureRing& f, double pre
 }
 PositionObservation PositionMatcher::update(const FeatureRing& f, double predicted) noexcept {
     if (state_ == PositionTrackingState::Idle) begin();
+    // A main-thread request for a global re-acquisition (e.g. the user tapped
+    // Reset while listening) is applied here, on the analyzer thread only.
+    if (reacquireRequested_.exchange(false, std::memory_order_acquire)) begin();
     PositionObservation o;
     if (state_ == PositionTrackingState::Locked || state_ == PositionTrackingState::Weak) {
         const double radius = (state_ == PositionTrackingState::Weak) ? kLocalRadiusWide : kLocalRadius;
