@@ -6,4 +6,6 @@
     <string name="reset_position">Reset position</string>
     <string name="no_midi">No MIDI loaded</string>
     <string name="permission_required">Microphone permission is required for tempo tracking.</string>
+    <string name="track_label">Track</string>
+    <string name="all_tracks">All tracks</string>
 </resources>

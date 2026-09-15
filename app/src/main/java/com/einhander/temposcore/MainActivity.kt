@@ -7,19 +7,28 @@ import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Choreographer
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.einhander.temposcore.databinding.ActivityMainBinding
 import com.einhander.temposcore.midi.MidiFileParser
+import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.ScoreNavigator
+import com.einhander.temposcore.score.TrackSelection
+import com.einhander.temposcore.score.visibleNotes
 import java.util.Locale
 
 class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     private lateinit var binding: ActivityMainBinding
     private var score: MidiScore? = null
+    private var trackSelection: TrackSelection = TrackSelection.All
+    private var visibleNotes: List<MidiNote> = emptyList()
+    private var spinnerPopulating = false
     private var expectedBpm = 120.0
     private var nativeInitialized = false
     private var frameLoopActive = false
@@ -52,6 +61,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
         binding.resetButton.setOnClickListener {
             if (nativeInitialized) NativeAudioBridge.resetPosition(0.0)
+        }
+
+        binding.trackSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (spinnerPopulating) return
+                trackSelection = if (pos == 0) TrackSelection.All else TrackSelection.Track(pos - 1)
+                visibleNotes = score?.visibleNotes(trackSelection) ?: emptyList()
+                binding.scoreView.trackSelection = trackSelection
+                updateUiFromTransport()
+            }
         }
     }
 
@@ -93,6 +114,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
                         NativeAudioBridge.stop()
                     }
                     score = parsed
+                    trackSelection = TrackSelection.All
+                    visibleNotes = parsed.notes
+                    binding.scoreView.trackSelection = trackSelection
+                    populateTrackSelector(parsed)
                     expectedBpm = parsed.initialBpm
                     binding.scoreView.score = parsed
                     binding.fileNameText.text = "$name  •  ${parsed.notes.size} notes"
@@ -109,6 +134,26 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
                 runOnUiThread { binding.loadMidiButton.isEnabled = true }
             }
         }.start()
+    }
+
+    private fun populateTrackSelector(score: MidiScore) {
+        if (score.tracks.size > 1) {
+            val items = listOf(getString(R.string.all_tracks)) + score.tracks.map { ScoreNavigator.trackLabel(it) }
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            // Guard must be set before the adapter assignment: setAdapter can
+            // fire onItemSelected synchronously (selection clamp) when the old
+            // selection index is out of range of the new adapter.
+            spinnerPopulating = true
+            binding.trackSpinner.adapter = adapter
+            binding.trackSpinner.setSelection(0)
+            spinnerPopulating = false
+            binding.trackSelectorRow.visibility = View.VISIBLE
+        } else {
+            binding.trackSpinner.adapter = null
+            binding.trackSelectorRow.visibility = View.GONE
+        }
     }
 
     private fun configureNativeEngine() {
@@ -152,8 +197,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         val state = if (nativeInitialized) NativeAudioBridge.state() else return
         val pos = state.quarterBeatPosition.coerceAtLeast(0.0)
         val barBeat = ScoreNavigator.barBeatAt(localScore, pos)
-        val now = ScoreNavigator.soundingNotes(localScore, pos)
-        val next = ScoreNavigator.nextNotes(localScore, pos)
+        val now = ScoreNavigator.soundingNotes(localScore, visibleNotes, pos)
+        val next = ScoreNavigator.nextNotes(localScore, visibleNotes, pos)
 
         binding.scoreView.quarterBeatPosition = pos
         binding.tempoText.text = String.format(

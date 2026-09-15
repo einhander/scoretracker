@@ -7,6 +7,8 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
 import com.einhander.temposcore.midi.MidiScore
+import com.einhander.temposcore.score.TrackSelection
+import com.einhander.temposcore.score.visibleNotes
 import kotlin.math.max
 
 /**
@@ -54,6 +56,12 @@ class ScoreStaffView @JvmOverloads constructor(
             invalidate()
         }
 
+    var trackSelection: TrackSelection = TrackSelection.All
+        set(value) {
+            field = value
+            invalidate()
+        }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val w = width.toFloat()
@@ -82,7 +90,7 @@ class ScoreStaffView @JvmOverloads constructor(
         val minBeat = quarterBeatPosition - pastWindow
         val maxBeat = quarterBeatPosition + futureWindow
 
-        localScore.notes.asSequence()
+        localScore.visibleNotes(trackSelection).asSequence()
             .filter {
                 val beat = localScore.noteStartBeat(it)
                 beat in minBeat..maxBeat
