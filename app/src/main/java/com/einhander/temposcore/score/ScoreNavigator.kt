@@ -2,25 +2,33 @@ package com.einhander.temposcore.score
 
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
+import com.einhander.temposcore.midi.MidiTrackInfo
 import kotlin.math.floor
 
 object ScoreNavigator {
     data class BarBeat(val bar: Int, val beat: Double, val numerator: Int, val denominator: Int)
 
     fun soundingNotes(score: MidiScore, quarterBeat: Double): List<MidiNote> =
-        score.notes.filter {
+        soundingNotes(score, score.notes, quarterBeat)
+
+    fun soundingNotes(score: MidiScore, notes: List<MidiNote>, quarterBeat: Double): List<MidiNote> =
+        notes.filter {
             val start = score.noteStartBeat(it)
             val end = score.noteEndBeat(it)
             start <= quarterBeat && quarterBeat < end
         }
 
     fun nextNotes(score: MidiScore, quarterBeat: Double, tolerance: Double = 1e-6): List<MidiNote> {
-        val nextStart = score.notes
+        return nextNotes(score, score.notes, quarterBeat, tolerance)
+    }
+
+    fun nextNotes(score: MidiScore, notes: List<MidiNote>, quarterBeat: Double, tolerance: Double = 1e-6): List<MidiNote> {
+        val nextStart = notes
             .asSequence()
             .map { score.noteStartBeat(it) }
             .filter { it > quarterBeat + tolerance }
             .minOrNull() ?: return emptyList()
-        return score.notes.filter { kotlin.math.abs(score.noteStartBeat(it) - nextStart) <= tolerance }
+        return notes.filter { kotlin.math.abs(score.noteStartBeat(it) - nextStart) <= tolerance }
     }
 
     fun barBeatAt(score: MidiScore, quarterBeat: Double): BarBeat {
@@ -60,6 +68,15 @@ object ScoreNavigator {
         val names = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
         val p = pitch.coerceIn(0, 127)
         return names[p % 12] + (p / 12 - 1)
+    }
+
+    fun trackLabel(track: MidiTrackInfo): String {
+        var label = "Track ${track.index + 1}"
+        if (!track.name.isNullOrBlank()) label += " — ${track.name}"
+        label += if (track.pitchMin != null && track.pitchMax != null) {
+            " • ${track.noteCount} notes, ${pitchName(track.pitchMin)}–${pitchName(track.pitchMax)}"
+        } else " • no notes"
+        return label
     }
 
     fun noteList(notes: List<MidiNote>): String =

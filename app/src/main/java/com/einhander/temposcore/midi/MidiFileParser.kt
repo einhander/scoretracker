@@ -1,6 +1,8 @@
 package com.einhander.temposcore.midi
 
 import java.util.ArrayDeque
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 
 /**
  * Small Standard MIDI File (SMF) parser for the application scaffold.
@@ -37,6 +39,7 @@ object MidiFileParser {
         val tempos = mutableListOf<TempoEvent>()
         val signatures = mutableListOf<TimeSignatureEvent>()
         var totalTicks = 0L
+        val trackNames = arrayOfNulls<String>(trackCount)
 
         repeat(trackCount) { trackIndex ->
             c.expectAscii("MTrk")
@@ -89,6 +92,19 @@ object MidiFileParser {
                                     c.skip(len - 2)
                                 } else {
                                     c.skip(len)
+                                }
+                            }
+                            0x03 -> {
+                                val nameBytes = c.readBytes(len)
+                                if (trackNames[trackIndex] == null) {
+                                    trackNames[trackIndex] = try {
+                                        StandardCharsets.UTF_8.newDecoder()
+                                            .onMalformedInput(CodingErrorAction.REPORT)
+                                            .onUnmappableCharacter(CodingErrorAction.REPORT)
+                                            .decode(java.nio.ByteBuffer.wrap(nameBytes)).toString()
+                                    } catch (_: java.nio.charset.CharacterCodingException) {
+                                        String(nameBytes, StandardCharsets.ISO_8859_1)
+                                    }
                                 }
                             }
                             else -> c.skip(len)
@@ -152,6 +168,12 @@ object MidiFileParser {
 
         val sortedNotes = notes.sortedWith(compareBy<MidiNote> { it.startTick }.thenBy { it.pitch })
         totalTicks = maxOf(totalTicks, sortedNotes.maxOfOrNull { it.endTick } ?: 0L)
+        val tracks = (0 until trackCount).map { index ->
+            val trackNotes = sortedNotes.filter { it.track == index }
+            MidiTrackInfo(index, trackNames[index], trackNotes.size,
+                trackNotes.minOfOrNull { it.pitch }, trackNotes.maxOfOrNull { it.pitch },
+                trackNotes.map { it.channel }.distinct().sorted())
+        }
 
         return MidiScore(
             format = format,
@@ -160,6 +182,7 @@ object MidiFileParser {
             tempoMap = sortedTempos,
             timeSignatures = sortedSignatures,
             totalTicks = totalTicks,
+            tracks = tracks,
         )
     }
 
@@ -208,6 +231,8 @@ object MidiFileParser {
                 (readU8().toLong() shl 16) or
                 (readU8().toLong() shl 8) or
                 readU8().toLong()
+
+        fun readBytes(count: Int): ByteArray = ByteArray(count) { readU8().toByte() }
 
         fun readVarLen(): Int {
             var value = 0
