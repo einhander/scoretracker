@@ -38,9 +38,8 @@ public:
     // validContextSeconds is the number of valid seconds in the live feature
     // window (spec §28 field 11); the analyzer owns the FeatureRing.
     void submitPositionObservation(const PositionObservation&, double validContextSeconds) noexcept;
-    void processFrames(int32_t numFrames,
-                       int32_t sampleRate,
-                       const BeatObservation& observation) noexcept;
+    void submitTempoObservation(const BeatObservation& observation) noexcept;
+    void processFrames(int32_t numFrames, int32_t sampleRate) noexcept;
     TransportState snapshot() const noexcept;
 
 private:
@@ -59,6 +58,12 @@ private:
     std::atomic<double> publishedConfidence_{0.0};
     std::atomic<double> publishedRms_{0.0};
     std::atomic<bool> running_{false};
+    std::atomic<double> tempoTargetBpm_{0.0};
+    std::atomic<float> tempoTargetConfidence_{0.0f};
+    std::atomic<bool> tempoTargetValid_{false};
+    std::atomic<uint64_t> tempoVersion_{0};
+    std::atomic<double> tempoDetectedBpm_{0.0};
+    std::atomic<double> tempoRms_{0.0};
     // Published score-following state (spec §28 fields 6-11).
     std::atomic<double> publishedPositionConfidence_{0.0};
     std::atomic<double> publishedMatchedPosition_{0.0};

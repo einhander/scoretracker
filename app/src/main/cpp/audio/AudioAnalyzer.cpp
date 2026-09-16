@@ -4,7 +4,7 @@
 #include <memory>
 #include <cmath>
 namespace temposcore {
-bool AudioAnalyzer::start(int32_t sampleRate) {
+bool AudioAnalyzer::start(int32_t sampleRate, double expectedBpm) {
     if (running_.exchange(true, std::memory_order_acq_rel)) return false;
     framesConsumed_.store(0, std::memory_order_relaxed);
     nextGridCenter_ = 2048;
@@ -13,6 +13,7 @@ bool AudioAnalyzer::start(int32_t sampleRate) {
     stft_ = std::make_unique<Stft>(sampleRate);
     chroma_ = std::make_unique<ChromaExtractor>(sampleRate);
     flux_ = std::make_unique<SpectralFlux>(sampleRate);
+    beatTracker_.configure(expectedBpm, sampleRate, static_cast<int32_t>(stft_->hop()));
     worker_ = std::thread(&AudioAnalyzer::run, this, sampleRate);
     return true;
 }
@@ -29,6 +30,10 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
             if (stft_->process(buffer, count)) {
                 const int64_t center = static_cast<int64_t>((stft_->frameIndex() - 1) * stft_->hop() + stft_->fftSize() / 2);
                 const auto bands = flux_->process(stft_->magnitude());
+                const BeatObservation tempo = beatTracker_.processFlux(bands, stft_->frameEnergy(), center);
+                // Publish every estimator update, including invalid observations, so
+                // silence/lost lock clears the RT target and enables fallback.
+                if (transport_) transport_->submitTempoObservation(tempo);
                 if (center < nextGridCenter_) continue;
                 AudioFeatureFrame frame;
                 chroma_->extract(stft_->magnitude(), frame.chroma);

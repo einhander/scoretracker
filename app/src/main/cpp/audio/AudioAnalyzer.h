@@ -7,6 +7,7 @@
 #include "position/FeatureRing.h"
 #include "position/PositionMatcher.h"
 #include "transport/LiveTransport.h"
+#include "beat/BeatTracker.h"
 #include <atomic>
 #include <cstdint>
 #include <thread>
@@ -16,7 +17,8 @@ class AudioAnalyzer final {
 public:
     explicit AudioAnalyzer(SpscAudioRing& ring) noexcept : ring_(ring) {}
     ~AudioAnalyzer() { stop(); }
-    bool start(int32_t sampleRate);
+    bool start(int32_t sampleRate, double expectedBpm);
+    void setExpectedBpm(double bpm) noexcept { beatTracker_.setExpectedBpm(bpm); }
     void stop() noexcept; // Non-real-time only: join may block.
     uint64_t framesConsumed() const noexcept { return framesConsumed_.load(std::memory_order_relaxed); }
     uint64_t featureSequence() const noexcept { return featureSequence_.load(std::memory_order_acquire); }
@@ -43,6 +45,7 @@ private:
     std::unique_ptr<Stft> stft_;
     std::unique_ptr<ChromaExtractor> chroma_;
     std::unique_ptr<SpectralFlux> flux_;
+    BeatTracker beatTracker_;
     // Slow-loop score following (analyzer thread only, non-RT).
     FeatureRing featureRing_;
     PositionMatcher* matcher_ = nullptr;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 
@@ -14,39 +15,34 @@ struct BeatObservation {
     bool phaseValid = false;
 };
 
-/**
- * Lightweight bootstrap tracker, intentionally conservative.
- *
- * It uses short-time energy rises as onset candidates, normalises candidate inter-onset
- * tempi around the MIDI prior, and applies a small PLL-like phase correction only when an
- * onset lands close to the predicted beat grid.
- *
- * This is NOT the production algorithm. Replace it with spectral-flux/multiband onset
- * detection + a probabilistic beat tracker without changing the JNI/UI contract.
- */
+/** Fixed-storage multiband spectral-flux tempo estimator. Phase remains intentionally disabled. */
 class BeatTracker {
 public:
-    void configure(double expectedBpm, int32_t sampleRate) noexcept;
+    void configure(double expectedBpm, int32_t sampleRate, int32_t hopSize) noexcept;
     // Non-resetting expected-BPM update (main thread; may be called while the
-    // stream is running). Only touches expectedBpm_ (atomic) — the running beat
-    // PLL (phase, confidence, estimated bpm) is preserved.
+    // stream is running). Only prior changes; running estimate is preserved.
     void setExpectedBpm(double bpm) noexcept;
-    BeatObservation process(const float* interleaved,
-                            int32_t numFrames,
-                            int32_t channelCount) noexcept;
+    BeatObservation processFlux(const std::array<float, 3>& bands,
+                                float energy,
+                                int64_t centerAudioFrame) noexcept;
 
 private:
-    double normaliseCandidateBpm(double bpm) const noexcept;
+    double evaluateTempo() noexcept;
 
     std::atomic<double> expectedBpm_{120.0};
-    double estimatedBpm_ = 120.0;
+    double estimatedBpm_ = 0.0;
     int32_t sampleRate_ = 48000;
-    int64_t framePosition_ = 0;
-    int64_t lastOnsetFrame_ = -1;
-    double predictedNextBeatFrame_ = -1.0;
-
-    float previousRms_ = 0.0f;
-    float fluxEma_ = 0.0005f;
+    int32_t hopSize_ = 1024;
+    double featureRate_ = 46.875;
+    // 384 samples at 46.875 Hz: 8.19-second analysis window.
+    std::array<float, 1024> history_{};
+    std::size_t historySize_ = 0;
+    std::size_t historyWrite_ = 0;
+    std::array<float, 3> mean_{};
+    std::array<float, 3> deviation_{};
+    int64_t lastCenterFrame_ = 0;
+    int32_t evaluationCountdown_ = 0;
+    float activity_ = 0.0f;
     float confidence_ = 0.0f;
 };
 

@@ -1,10 +1,12 @@
 #include "transport/LiveTransport.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace temposcore {
 
 void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexcept {
+    if (!std::isfinite(expectedBpm)) expectedBpm = 120.0;
     expectedBpm = std::clamp(expectedBpm, 30.0, 300.0);
     requestedExpectedBpm_.store(expectedBpm, std::memory_order_relaxed);
     requestedPosition_.store(std::max(0.0, startQuarterBeat), std::memory_order_relaxed);
@@ -14,6 +16,9 @@ void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexc
     positionRt_ = std::max(0.0, startQuarterBeat);
     publishedBpm_.store(currentBpmRt_, std::memory_order_relaxed);
     publishedPosition_.store(positionRt_, std::memory_order_relaxed);
+    tempoTargetBpm_.store(0.0); tempoTargetConfidence_.store(0.0f);
+    tempoTargetValid_.store(false); tempoDetectedBpm_.store(0.0); tempoRms_.store(0.0);
+    tempoVersion_.fetch_add(2, std::memory_order_release);
 }
 
 void LiveTransport::resetPosition(double startQuarterBeat) noexcept {
@@ -24,6 +29,7 @@ void LiveTransport::resetPosition(double startQuarterBeat) noexcept {
 }
 
 void LiveTransport::setExpectedBpm(double expectedBpm) noexcept {
+    if (!std::isfinite(expectedBpm)) return;
     const double clamped = std::clamp(expectedBpm, 30.0, 300.0);
     requestedExpectedBpm_.store(clamped, std::memory_order_relaxed);
     if (!running_.load(std::memory_order_relaxed)) {
@@ -42,6 +48,14 @@ void LiveTransport::publishIdle() noexcept {
     publishedPositionError_.store(0.0,std::memory_order_relaxed);
     publishedAmbiguity_.store(0.0,std::memory_order_relaxed);
     targetActive_.store(false,std::memory_order_relaxed);
+    tempoVersion_.fetch_add(1, std::memory_order_relaxed);
+    tempoTargetValid_.store(false, std::memory_order_release);
+    tempoTargetBpm_.store(0.0, std::memory_order_relaxed);
+    tempoTargetConfidence_.store(0.0f, std::memory_order_relaxed);
+    tempoDetectedBpm_.store(0.0, std::memory_order_relaxed);
+    tempoRms_.store(0.0, std::memory_order_relaxed);
+    publishedDetectedBpm_.store(0.0, std::memory_order_relaxed);
+    tempoVersion_.fetch_add(1, std::memory_order_release);
 }
 
 void LiveTransport::submitPositionObservation(const PositionObservation&o, double validContextSeconds) noexcept {
@@ -64,9 +78,22 @@ void LiveTransport::submitPositionObservation(const PositionObservation&o, doubl
     targetActive_.store(true,std::memory_order_release);
 }
 
-void LiveTransport::processFrames(int32_t numFrames,
-                                  int32_t sampleRate,
-                                  const BeatObservation& observation) noexcept {
+void LiveTransport::submitTempoObservation(const BeatObservation& observation) noexcept {
+    const bool finiteBpm = std::isfinite(observation.detectedBpm);
+    const bool valid = observation.tempoValid && finiteBpm && observation.detectedBpm > 0.0;
+    const double bpm = valid ? std::clamp(observation.detectedBpm, 30.0, 300.0) : 0.0;
+    const float confidence = std::clamp(std::isfinite(observation.confidence) ? observation.confidence : 0.0f, 0.0f, 1.0f);
+    const double rms = std::max(0.0, std::isfinite(observation.rms) ? static_cast<double>(observation.rms) : 0.0);
+    tempoVersion_.fetch_add(1, std::memory_order_relaxed);
+    tempoTargetBpm_.store(bpm, std::memory_order_relaxed);
+    tempoTargetConfidence_.store(confidence, std::memory_order_relaxed);
+    tempoDetectedBpm_.store(bpm, std::memory_order_relaxed);
+    tempoRms_.store(rms, std::memory_order_relaxed);
+    tempoTargetValid_.store(valid, std::memory_order_release);
+    tempoVersion_.fetch_add(1, std::memory_order_release);
+}
+
+void LiveTransport::processFrames(int32_t numFrames, int32_t sampleRate) noexcept {
     if (numFrames <= 0 || sampleRate <= 0) return;
 
     expectedBpmRt_ = requestedExpectedBpm_.load(std::memory_order_relaxed);
@@ -76,13 +103,23 @@ void LiveTransport::processFrames(int32_t numFrames,
         appliedPositionGeneration_ = generation;
     }
 
-    if (observation.tempoValid && observation.confidence > 0.08f) {
-        // Separate detected BPM from transport BPM: the cursor must move smoothly.
-        const double target = std::clamp(observation.detectedBpm,
-                                         expectedBpmRt_ * 0.55,
-                                         expectedBpmRt_ * 1.80);
-        currentBpmRt_ = 0.985 * currentBpmRt_ + 0.015 * target;
+    bool valid = false; double target = 0.0; double confidence = 0.0;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const uint64_t before = tempoVersion_.load(std::memory_order_acquire);
+        if (before & 1U) continue;
+        target = tempoTargetBpm_.load(std::memory_order_relaxed);
+        confidence = tempoTargetConfidence_.load(std::memory_order_relaxed);
+        valid = tempoTargetValid_.load(std::memory_order_relaxed);
+        if (before == tempoVersion_.load(std::memory_order_acquire)) break;
+        valid = false;
     }
+    if (!std::isfinite(target) || !std::isfinite(confidence)) { valid = false; target = 0.0; confidence = 0.0; }
+    const double tau = valid ? (confidence >= 0.75 ? 0.7 : 1.2) : 4.0;
+    const double alpha = 1.0 - std::exp(-static_cast<double>(numFrames) / sampleRate / tau);
+    const double boundedTarget = valid
+        ? std::clamp(target, expectedBpmRt_ * 0.55, expectedBpmRt_ * 1.80)
+        : expectedBpmRt_;
+    currentBpmRt_ += alpha * (boundedTarget - currentBpmRt_);
 
     // Never let a noisy tracker instantly run away from the MIDI prior.
     currentBpmRt_ = std::clamp(currentBpmRt_,
@@ -124,17 +161,13 @@ void LiveTransport::processFrames(int32_t numFrames,
             targetActive_.store(false, std::memory_order_relaxed);
         }
     }
-    if (observation.phaseValid && observation.confidence > 0.18f) {
-        positionRt_ += observation.phaseCorrectionBeats;
-    }
     positionRt_ = std::max(0.0, positionRt_);
 
     publishedBpm_.store(currentBpmRt_, std::memory_order_relaxed);
-    publishedDetectedBpm_.store(observation.confidence > 0.03f ? observation.detectedBpm : 0.0,
-                                std::memory_order_relaxed);
+    publishedDetectedBpm_.store(valid ? tempoDetectedBpm_.load(std::memory_order_relaxed) : 0.0, std::memory_order_relaxed);
     publishedPosition_.store(positionRt_, std::memory_order_relaxed);
-    publishedConfidence_.store(observation.confidence, std::memory_order_relaxed);
-    publishedRms_.store(observation.rms, std::memory_order_relaxed);
+    publishedConfidence_.store(valid ? confidence : 0.0, std::memory_order_relaxed);
+    publishedRms_.store(tempoRms_.load(std::memory_order_relaxed), std::memory_order_relaxed);
 }
 
 TransportState LiveTransport::snapshot() const noexcept {

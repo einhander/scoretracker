@@ -4,105 +4,113 @@
 #include <cmath>
 
 namespace temposcore {
+namespace {
+constexpr float kWeights[3] = {0.8f, 1.0f, 0.7f};
+constexpr float kEpsilon = 1.0e-5f;
+}
 
-void BeatTracker::configure(double expectedBpm, int32_t sampleRate) noexcept {
-    const double clamped = std::clamp(expectedBpm, 30.0, 300.0);
-    expectedBpm_.store(clamped, std::memory_order_relaxed);
-    estimatedBpm_ = clamped;
+void BeatTracker::configure(double expectedBpm, int32_t sampleRate, int32_t hopSize) noexcept {
+    if (!std::isfinite(expectedBpm)) expectedBpm = 0.0;
+    expectedBpm_.store(std::clamp(expectedBpm, 30.0, 300.0), std::memory_order_relaxed);
     sampleRate_ = std::max(sampleRate, 8000);
-    framePosition_ = 0;
-    lastOnsetFrame_ = -1;
-    predictedNextBeatFrame_ = -1.0;
-    previousRms_ = 0.0f;
-    fluxEma_ = 0.0005f;
-    confidence_ = 0.0f;
+    hopSize_ = std::max(hopSize, 1);
+    featureRate_ = static_cast<double>(sampleRate_) / hopSize_;
+    history_.fill(0.0f); mean_.fill(0.0f); deviation_.fill(0.01f);
+    historySize_ = historyWrite_ = 0;
+    estimatedBpm_ = 0.0; confidence_ = 0.0f; activity_ = 0.0f;
+    evaluationCountdown_ = 0;
+    lastCenterFrame_ = 0;
 }
 
 void BeatTracker::setExpectedBpm(double bpm) noexcept {
-    // Non-resetting: only the prior changes; the running beat PLL (phase,
-    // confidence, estimated bpm) is preserved. Safe from the main thread while
-    // the Oboe callback runs (expectedBpm_ is atomic).
+    if (!std::isfinite(bpm)) return;
     expectedBpm_.store(std::clamp(bpm, 30.0, 300.0), std::memory_order_relaxed);
 }
 
-double BeatTracker::normaliseCandidateBpm(double bpm) const noexcept {
-    const double expected = expectedBpm_.load(std::memory_order_relaxed);
-    if (!(bpm > 0.0)) return 0.0;
-    while (bpm < expected * 0.67) bpm *= 2.0;
-    while (bpm > expected * 1.50) bpm *= 0.5;
-    return bpm;
+double BeatTracker::evaluateTempo() noexcept {
+    if (historySize_ < static_cast<std::size_t>(featureRate_ * 3.0) || activity_ < 0.01f) return 0.0;
+    const int maxLag = std::min( static_cast<int>(historySize_) - 1,
+                                 static_cast<int>(featureRate_ * 60.0 / 40.0));
+    const int minLag = std::max(1, static_cast<int>(featureRate_ * 60.0 / 240.0));
+    const std::size_t window = std::min(historySize_, std::min(history_.size(),
+        static_cast<std::size_t>(std::max(2.0, std::round(featureRate_ * 8.0)))));
+    const int windowLag = static_cast<int>(window) - 1;
+    const int boundedMinLag = std::min(minLag, windowLag);
+    const int boundedMaxLag = std::min(maxLag, windowLag);
+    if (boundedMinLag >= boundedMaxLag) return 0.0;
+    std::array<double, 1024> acValues{};
+    std::array<double, 1024> scores{};
+    std::array<int, 24> peaks{};
+    int peakCount = 0;
+    auto correlationAt = [&](int l) {
+        if (l >= static_cast<int>(window)) return 0.0;
+        double a = 0.0, b = 0.0, c = 0.0;
+        for (std::size_t j = l; j < window; ++j) {
+            const float x = history_[(historyWrite_ + history_.size() - window + j) % history_.size()];
+            const float y = history_[(historyWrite_ + history_.size() - window + j - l) % history_.size()];
+            a += x * y; b += x * x; c += y * y;
+        }
+        return a / (std::sqrt(b * c) + kEpsilon);
+    };
+    for (int lag = boundedMinLag; lag <= boundedMaxLag; ++lag) {
+        double xy = 0.0, xx = 0.0, yy = 0.0;
+        const std::size_t n = window;
+        for (std::size_t i = lag; i < n; ++i) {
+            const float x = history_[(historyWrite_ + history_.size() - n + i) % history_.size()];
+            const float y = history_[(historyWrite_ + history_.size() - n + i - lag) % history_.size()];
+            xy += x * y; xx += x * x; yy += y * y;
+        }
+        const double ac = xy / (std::sqrt(xx * yy) + kEpsilon);
+        acValues[lag] = ac;
+    }
+    // Discover peaks from raw autocorrelation first; priors cannot invent peaks.
+    for (int lag = boundedMinLag + 1; lag < boundedMaxLag; ++lag)
+        if (acValues[lag] >= acValues[lag - 1] && acValues[lag] >= acValues[lag + 1] && peakCount < 24)
+            peaks[peakCount++] = lag;
+    for (int p = 0; p < peakCount; ++p) {
+        const int lag = peaks[p];
+        const double bpm = featureRate_ * 60.0 / lag;
+        const double distance = std::abs(std::log2(bpm / expectedBpm_.load(std::memory_order_relaxed)));
+        const double ac = acValues[lag];
+        const double family = ac + 0.35 * correlationAt(lag * 2) + 0.20 * correlationAt(lag * 4);
+        scores[lag] = family + 0.15 * std::exp(-0.5 * std::pow(distance / 0.5, 2.0));
+    }
+    double best = 0.0, second = 0.0, chosen = 0.0;
+    for (int p = 0; p < peakCount; ++p) {
+        const double score = scores[peaks[p]];
+        if (score > best) { second = best; best = score; chosen = featureRate_ * 60.0 / peaks[p]; }
+        else if (score > second) second = score;
+    }
+    const float context = std::min(1.0f, static_cast<float>(historySize_ / (featureRate_ * 6.0)));
+    const double uniqueness = peakCount >= 2 ? (best - second) : 0.0;
+    confidence_ = std::clamp(static_cast<float>(0.45 * best + 0.9 * uniqueness + 0.35 * context), 0.0f, 1.0f);
+    if (confidence_ < 0.28f) return 0.0;
+    if (estimatedBpm_ <= 0.0) estimatedBpm_ = chosen;
+    else estimatedBpm_ = std::exp(0.75 * std::log(estimatedBpm_) + 0.25 * std::log(chosen));
+    return estimatedBpm_;
 }
 
-BeatObservation BeatTracker::process(const float* data,
-                                     int32_t numFrames,
-                                     int32_t channelCount) noexcept {
+BeatObservation BeatTracker::processFlux(const std::array<float, 3>& bands, float energy,
+                                         int64_t centerAudioFrame) noexcept {
     BeatObservation out;
-    if (data == nullptr || numFrames <= 0 || channelCount <= 0) return out;
-
-    const double expected = expectedBpm_.load(std::memory_order_relaxed);
-    double sumSquares = 0.0;
-    const int64_t sampleCount = static_cast<int64_t>(numFrames) * channelCount;
-    for (int64_t i = 0; i < sampleCount; ++i) {
-        const float x = data[i];
-        sumSquares += static_cast<double>(x) * x;
+    float onset = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        const float x = std::isfinite(bands[i]) ? std::max(0.0f, bands[i]) : 0.0f;
+        mean_[i] = 0.99f * mean_[i] + 0.01f * x;
+        deviation_[i] = 0.99f * deviation_[i] + 0.01f * std::abs(x - mean_[i]);
+        onset += kWeights[i] * std::clamp((x - mean_[i]) / (deviation_[i] + kEpsilon), 0.0f, 8.0f);
     }
-    const float rms = static_cast<float>(std::sqrt(sumSquares / std::max<int64_t>(1, sampleCount)));
-    out.rms = rms;
-
-    // Energy-rise onset proxy. A production tracker should replace this with multiband
-    // spectral flux or another transient detector robust to guitar/bass/drum mixtures.
-    const float positiveRise = std::max(0.0f, rms - previousRms_);
-    previousRms_ = 0.82f * previousRms_ + 0.18f * rms;
-    fluxEma_ = 0.985f * fluxEma_ + 0.015f * positiveRise;
-
-    const float threshold = std::max(0.0015f, fluxEma_ * 2.8f);
-    const int64_t onsetFrame = framePosition_ + numFrames / 2;
-    const int64_t refractoryFrames = static_cast<int64_t>(sampleRate_ * 0.075);
-    const bool refractoryOk = lastOnsetFrame_ < 0 || onsetFrame - lastOnsetFrame_ > refractoryFrames;
-    const bool onset = positiveRise > threshold && rms > 0.006f && refractoryOk;
-
-    if (onset) {
-        if (lastOnsetFrame_ >= 0) {
-            const int64_t delta = onsetFrame - lastOnsetFrame_;
-            if (delta > 0) {
-                double candidate = 60.0 * static_cast<double>(sampleRate_) / static_cast<double>(delta);
-                candidate = normaliseCandidateBpm(candidate);
-                if (candidate >= expected * 0.55 && candidate <= expected * 1.80) {
-                    estimatedBpm_ = 0.86 * estimatedBpm_ + 0.14 * candidate;
-                    confidence_ = std::min(1.0f, confidence_ + 0.10f);
-                    out.tempoValid = true;
-                } else {
-                    confidence_ *= 0.96f;
-                }
-            }
-        }
-
-        const double beatPeriodFrames = 60.0 * sampleRate_ / std::max(30.0, estimatedBpm_);
-        if (predictedNextBeatFrame_ < 0.0) {
-            predictedNextBeatFrame_ = onsetFrame + beatPeriodFrames;
-        } else {
-            // Bring prediction forward until it is around this onset.
-            while (predictedNextBeatFrame_ + 0.5 * beatPeriodFrames < onsetFrame) {
-                predictedNextBeatFrame_ += beatPeriodFrames;
-            }
-            const double errorFrames = onsetFrame - predictedNextBeatFrame_;
-            if (std::abs(errorFrames) < 0.18 * beatPeriodFrames) {
-                const double errorBeats = errorFrames / beatPeriodFrames;
-                out.phaseCorrectionBeats = std::clamp(errorBeats * 0.20, -0.04, 0.04);
-                out.phaseValid = true;
-                predictedNextBeatFrame_ += beatPeriodFrames + errorFrames * 0.15;
-                confidence_ = std::min(1.0f, confidence_ + 0.05f);
-            }
-        }
-        lastOnsetFrame_ = onsetFrame;
-    } else {
-        confidence_ *= 0.9995f;
-    }
-
-    framePosition_ += numFrames;
-    out.detectedBpm = estimatedBpm_;
-    out.confidence = confidence_;
+    const float safeEnergy = std::isfinite(energy) ? std::max(0.0f, energy) : 0.0f;
+    activity_ = 0.995f * activity_ + 0.005f * std::min(1.0f, std::max(onset / 4.0f, safeEnergy * 10.0f));
+    history_[historyWrite_] = onset;
+    historyWrite_ = (historyWrite_ + 1) % history_.size();
+    historySize_ = std::min(historySize_ + 1, history_.size());
+    if (--evaluationCountdown_ <= 0) { evaluateTempo(); evaluationCountdown_ = std::max(1, static_cast<int>(featureRate_ / 4.0)); }
+    if (activity_ < 0.02f) { estimatedBpm_ = 0.0; confidence_ = 0.0f; }
+    out.detectedBpm = estimatedBpm_; out.confidence = confidence_; out.rms = std::sqrt(safeEnergy);
+    out.tempoValid = estimatedBpm_ > 0.0 && confidence_ >= 0.28f;
+    out.phaseValid = false; out.phaseCorrectionBeats = 0.0;
+    lastCenterFrame_ = centerAudioFrame;
     return out;
 }
-
 } // namespace temposcore

@@ -64,8 +64,8 @@ The official Gradle 8.5 wrapper is included; `./gradlew` works out of the box (d
 - Now / Next note labels;
 - JNI boundary;
 - Oboe low-latency microphone input;
-- lightweight energy-onset + MIDI-prior BPM bootstrap tracker;
-- smoothed transport BPM and basic PLL-like phase correction;
+- multiband spectral-flux tempo estimator with fixed history/autocorrelation;
+- delayed-confidence lock, weak MIDI prior, time-smoothed transport; phase disabled in first stage;
 - **content-aware score following**: STFT/chroma/spectral-flux feature analysis, a constrained
   DTW matcher (global acquisition + local correction + repeat disambiguation), and a
   position-tracking state machine (`Acquiring → Locked → Weak → Reacquiring`) that corrects the
@@ -76,7 +76,7 @@ The official Gradle 8.5 wrapper is included; `./gradlew` works out of the box (d
 
 ## What is deliberately not production-ready
 
-The current `BeatTracker` is only an architectural bootstrap. It uses energy rises, not robust multiband spectral flux, and will fail on many real musical passages. The proper tracker is described in `SPEC.md` and `AGENT_INSTRUCTIONS.md`.
+Tempo tracking uses multiband spectral flux in the analyzer worker, fixed history and autocorrelation; lock is delayed by confidence and MIDI tempo is only a weak prior.
 
 Likewise, `ScoreStaffView` is a visualization placeholder, not a notation engraver. Proper clefs, accidentals, voices, beams, ties, rhythmic quantization and multi-staff layout belong to a later milestone.
 
@@ -92,7 +92,7 @@ policy by deterministic host tests.
 - `AGENT_INSTRUCTIONS.md` — detailed implementation guide for a coding agent.
 - `docs/architecture.md` — component and threading model.
 - `docs/realtime-rules.md` — hard real-time rules.
-- `app/src/main/cpp/beat/BeatTracker.*` — replaceable beat-tracking prototype.
+- `app/src/main/cpp/beat/BeatTracker.*` — fixed-history spectral-flux/autocorrelation tempo estimator (phase disabled initially).
 - `app/src/main/cpp/audio/OboeInputEngine.*` — microphone backend (owns the score reference + matcher).
 - `app/src/main/cpp/audio/AudioAnalyzer.*` — non-RT feature analysis (STFT/chroma/flux) + matcher cadence.
 - `app/src/main/cpp/dsp/*` — radix-2 FFT, STFT, chroma, spectral flux (own minimal DSP, no third-party).

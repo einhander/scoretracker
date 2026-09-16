@@ -14,7 +14,7 @@
        expected tempo prior                  |
               |                              |
               v                              |
-Microphone -> Oboe -> beat tracker -> LiveTransport
+Microphone -> Oboe -> preallocated SPSC ring -> AudioAnalyzer
               C++         C++             C++
                           |                |
                           +-------> TransportState
@@ -26,7 +26,9 @@ Microphone -> Oboe -> beat tracker -> LiveTransport
 
   Score following (slow loop, analyzer thread — never the RT callback):
 
-  Oboe callback --(SPSC ring)--> AudioAnalyzer (STFT/chroma/spectral-flux @ 10 Hz)
+  Oboe callback: LiveTransport::processFrames + SPSC ring write only
+  AudioAnalyzer: STFT spectral flux every hop -> BeatTracker::processFlux
+                 -> atomic tempo submission; existing chroma/features remain @ 10 Hz
                                        |
                                        v
                               FeatureRing (200 frames = 20 s live context)

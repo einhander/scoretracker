@@ -1,13 +1,14 @@
 #include "audio/OboeInputEngine.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace temposcore {
 
 void OboeInputEngine::initialize(double expectedBpm, double startQuarterBeat) noexcept {
+    if (!std::isfinite(expectedBpm)) expectedBpm = 120.0;
     expectedBpm_ = std::clamp(expectedBpm, 30.0, 300.0);
     transport_.configure(expectedBpm_, startQuarterBeat);
-    beatTracker_.configure(expectedBpm_, sampleRate_);
 }
 
 bool OboeInputEngine::openStream(oboe::InputPreset preset) {
@@ -31,7 +32,6 @@ bool OboeInputEngine::openStream(oboe::InputPreset preset) {
 
     sampleRate_ = stream_->getSampleRate();
     channelCount_ = std::max(1, stream_->getChannelCount());
-    beatTracker_.configure(expectedBpm_, sampleRate_);
     return true;
 }
 
@@ -48,7 +48,7 @@ bool OboeInputEngine::start() {
 
     ring_.reset();
     if (matcher_) matcher_->begin(); // fresh acquisition on each start
-    if (!analyzer_.start(sampleRate_)) return false;
+    if (!analyzer_.start(sampleRate_, expectedBpm_)) return false;
     const oboe::Result result = stream_->requestStart();
     if (result != oboe::Result::OK) {
         stream_->close();
@@ -75,11 +75,12 @@ void OboeInputEngine::stop() {
 }
 
 void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
+    if (!std::isfinite(bpm)) return;
     expectedBpm_ = std::clamp(bpm, 30.0, 300.0);
     transport_.setExpectedBpm(expectedBpm_);
-    // Non-resetting: safe to call while the stream is running (tempo-region
-    // crossing). The full beat-PLL reset happens in initialize()/openStream().
-    beatTracker_.setExpectedBpm(expectedBpm_);
+    // Non-resetting: safe during tempo-region crossings; analyzer preserves
+    // accumulated flux history while only updating its MIDI tempo prior.
+    analyzer_.setExpectedBpm(expectedBpm_);
 }
 
 void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
@@ -101,8 +102,7 @@ oboe::DataCallbackResult OboeInputEngine::onAudioReady(oboe::AudioStream* /*audi
                                                         void* audioData,
                                                         int32_t numFrames) {
     const auto* input = static_cast<const float*>(audioData);
-    const BeatObservation observation = beatTracker_.process(input, numFrames, channelCount_);
-    transport_.processFrames(numFrames, sampleRate_, observation);
+    transport_.processFrames(numFrames, sampleRate_);
     // Stream is configured mono, so input is contiguous mono float samples.
     ring_.write(input, static_cast<size_t>(numFrames));
     return oboe::DataCallbackResult::Continue;

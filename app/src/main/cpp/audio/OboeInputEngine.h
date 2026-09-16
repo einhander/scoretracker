@@ -1,6 +1,5 @@
 #pragma once
 
-#include "beat/BeatTracker.h"
 #include "audio/AudioAnalyzer.h"
 #include "position/PositionMatcher.h"
 #include "position/ScoreReference.h"
@@ -42,7 +41,6 @@ private:
     bool openStream(oboe::InputPreset preset);
 
     std::shared_ptr<oboe::AudioStream> stream_;
-    BeatTracker beatTracker_;
     LiveTransport transport_;
     SpscAudioRing ring_{200000}; // ~4.1 s mono at 48 kHz; allocated before start.
     AudioAnalyzer analyzer_{ring_};

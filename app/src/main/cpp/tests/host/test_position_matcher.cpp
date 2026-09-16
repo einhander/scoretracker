@@ -136,7 +136,7 @@ void test_transport_small_direct() {
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
-    t.processFrames(480, 48000, silentBeat());
+    t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 10.2);
     CHECK(pos < 10.6);
@@ -153,7 +153,7 @@ void test_transport_medium_slew() {
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
-    t.processFrames(480, 48000, silentBeat()); // 10 ms
+    t.processFrames(480, 48000); // 10 ms
     const double pos = t.snapshot().quarterBeatPosition;
     // Slew is rate-limited: only a small step in 10 ms, not the full 3 beats.
     CHECK(pos > 10.0);
@@ -174,7 +174,7 @@ void test_transport_slew_converges() {
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
-    for (int i = 0; i < 150; ++i) t.processFrames(480, 48000, silentBeat()); // ~1.5 s
+    for (int i = 0; i < 150; ++i) t.processFrames(480, 48000); // ~1.5 s
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 12.0); // converged toward the target (13.0)
     CHECK(pos < 14.0);
@@ -191,7 +191,7 @@ void test_transport_large_ambiguous_no_jump() {
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
-    t.processFrames(480, 48000, silentBeat());
+    t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos < 12.0); // did not jump to 20
 }
@@ -207,7 +207,7 @@ void test_transport_large_strong_applied() {
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
-    t.processFrames(480, 48000, silentBeat());
+    t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0); // jumped to ~20
 }
@@ -223,11 +223,31 @@ void test_transport_global_lock_applied() {
     o.valid = true;
     o.globalMatch = true; // ...it is the initial global lock
     t.submitPositionObservation(o, 10.0);
-    t.processFrames(480, 48000, silentBeat());
+    t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0);
 }
 
+static void test_transport_tempo_target_and_fallback() {
+    LiveTransport t; t.configure(120.0, 0.0);
+    BeatObservation o; o.detectedBpm = 90.0; o.confidence = 0.95f; o.rms = 0.2f;
+    o.tempoValid = true; o.phaseValid = true; o.phaseCorrectionBeats = 9.0;
+    const double before = t.snapshot().quarterBeatPosition;
+    t.submitTempoObservation(o);
+    t.processFrames(480, 48000);
+    const double after = t.snapshot().quarterBeatPosition;
+    CHECK(after - before < 0.1); // phase correction must be ignored
+    for (int i = 0; i < 250; ++i) t.processFrames(480, 48000);
+    CHECK(t.snapshot().transportBpm > 90.0 && t.snapshot().transportBpm < 95.0);
+    o.tempoValid = false; o.detectedBpm = 0.0; o.confidence = 0.0f;
+    t.submitTempoObservation(o);
+    for (int i = 0; i < 1000; ++i) t.processFrames(480, 48000);
+    CHECK(t.snapshot().detectedBpm == 0.0);
+    CHECK(std::isfinite(t.snapshot().transportBpm));
+    CHECK(t.snapshot().transportBpm >= 115.0 && t.snapshot().transportBpm <= 121.0);
+}
+
+REGISTER_TEST(test_transport_tempo_target_and_fallback);
 REGISTER_TEST(test_matcher_acquire_lock);
 REGISTER_TEST(test_matcher_degrade_reacquire);
 REGISTER_TEST(test_matcher_silence_no_lock);

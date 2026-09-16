@@ -20,28 +20,30 @@ The production architecture must be:
 ```text
 Oboe callback (hard RT)
   -> copy PCM into preallocated SPSC audio ring
-  -> consume latest BeatObservation (bootstrap BeatTracker, in-callback)
+  -> processFrames using latest atomic tempo snapshot
   -> sample-frame-based LiveTransport (slew/relocate toward latest position target)
   -> atomic TransportState
   -> Kotlin UI polls snapshot
 
 Analyzer thread (non-RT, ~10 Hz features, ~2 s matcher cadence)
-  -> AudioAnalyzer: STFT / chroma / spectral flux (own minimal DSP)
+  -> AudioAnalyzer: STFT / multiband spectral flux every hop
+  -> BeatTracker::processFlux -> atomic tempo snapshot
+  -> chroma/features at 10 Hz
   -> FeatureRing (200 frames = 20 s live context)
   -> PositionMatcher: constrained DTW (global acquisition + local correction)
        + position-tracking state machine (Acquiring/Locked/Weak/Reacquiring)
   -> LiveTransport.submitPositionObservation (publishes position state + correction target)
 ```
 
-Cross-thread hand-offs (atomics / ring only — the `BeatObservation` is produced and consumed
-inside the Oboe callback, so it is NOT a cross-thread hand-off):
+Cross-thread hand-offs use atomics / ring only:
 
 1. PCM: Oboe callback → analyzer, via the preallocated SPSC ring.
 2. Position target: analyzer → Oboe callback, via the persistent target atomics
    (`LiveTransport::submitPositionObservation`); the transport slews toward it.
 3. Reacquire request: main thread → analyzer, via the `PositionMatcher` atomic flag
    (applied on the analyzer thread in `update()`).
-4. Transport requests: main thread → Oboe callback, via the request atomics
+4. Tempo snapshot: analyzer → Oboe callback, via bounded coherent tempo atomics.
+5. Transport requests: main thread → Oboe callback, via the request atomics
    (`requestedExpectedBpm_`, `requestedPosition_`, running flag).
 
 The matcher never touches the transport's musical position directly; it only proposes a target.
