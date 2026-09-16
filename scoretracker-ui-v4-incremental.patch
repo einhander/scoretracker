@@ -1,0 +1,509 @@
+diff --git a/app/src/main/cpp/audio/OboeInputEngine.cpp b/app/src/main/cpp/audio/OboeInputEngine.cpp
+index af012e7..2d4dee3 100644
+--- a/app/src/main/cpp/audio/OboeInputEngine.cpp
++++ b/app/src/main/cpp/audio/OboeInputEngine.cpp
+@@ -109,6 +109,11 @@ void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
+     transport_.resetPosition(startQuarterBeat);
+ }
+ 
++void OboeInputEngine::setManualPosition(double startQuarterBeat) noexcept {
++    transport_.resetPosition(startQuarterBeat);
++    if (matcher_) matcher_->requestLocalReacquire();
++}
++
+ void OboeInputEngine::setScoreReference(const MidiData& data) noexcept {
+     buildScoreReference(data, reference_);
+     matcher_.reset(new PositionMatcher(reference_));
+diff --git a/app/src/main/cpp/audio/OboeInputEngine.h b/app/src/main/cpp/audio/OboeInputEngine.h
+index 3649248..e3f42bc 100644
+--- a/app/src/main/cpp/audio/OboeInputEngine.h
++++ b/app/src/main/cpp/audio/OboeInputEngine.h
+@@ -23,6 +23,7 @@ public:
+     void stop();
+     void setExpectedBpm(double bpm) noexcept;
+     void resetPosition(double startQuarterBeat) noexcept;
++    void setManualPosition(double startQuarterBeat) noexcept;
+     // Build the score reference from the parsed MIDI and (re)create the
+     // PositionMatcher. Called on the main thread (JNI) BEFORE start().
+     void setScoreReference(const MidiData& data) noexcept;
+diff --git a/app/src/main/cpp/native_audio_jni.cpp b/app/src/main/cpp/native_audio_jni.cpp
+index 75338cb..0c2f9b9 100644
+--- a/app/src/main/cpp/native_audio_jni.cpp
++++ b/app/src/main/cpp/native_audio_jni.cpp
+@@ -60,6 +60,12 @@ Java_com_einhander_temposcore_NativeAudioBridge_resetPosition(
+     gEngine.resetPosition(startQuarterBeat);
+ }
+ 
++extern "C" JNIEXPORT void JNICALL
++Java_com_einhander_temposcore_NativeAudioBridge_setManualPosition(
++        JNIEnv*, jobject, jdouble startQuarterBeat) {
++    gEngine.setManualPosition(startQuarterBeat);
++}
++
+ extern "C" JNIEXPORT void JNICALL
+ Java_com_einhander_temposcore_NativeAudioBridge_requestGlobalReacquire(JNIEnv*, jobject) {
+     gEngine.requestGlobalReacquire();
+diff --git a/app/src/main/cpp/position/PositionMatcher.cpp b/app/src/main/cpp/position/PositionMatcher.cpp
+index 1dd9896..8788c24 100644
+--- a/app/src/main/cpp/position/PositionMatcher.cpp
++++ b/app/src/main/cpp/position/PositionMatcher.cpp
+@@ -51,9 +51,17 @@ PositionObservation PositionMatcher::trackLocal(const FeatureRing& f, double pre
+ }
+ PositionObservation PositionMatcher::update(const FeatureRing& f, double predicted) noexcept {
+     if (state_ == PositionTrackingState::Idle) begin();
+-    // A main-thread request for a global re-acquisition (e.g. the user tapped
+-    // Reset while listening) is applied here, on the analyzer thread only.
+-    if (reacquireRequested_.exchange(false, std::memory_order_acquire)) begin();
++    // Main-thread requests are applied here, on the analyzer thread only.
++    // A manual scrub keeps the user's chosen neighbourhood authoritative and
++    // resumes with local DTW; Reset/test seek still asks for a global search.
++    if (localReacquireRequested_.exchange(false, std::memory_order_acquire)) {
++        state_ = PositionTrackingState::Locked;
++        stable_ = 1;
++        weakStreak_ = 0;
++        hasLast_ = false;
++    } else if (reacquireRequested_.exchange(false, std::memory_order_acquire)) {
++        begin();
++    }
+     PositionObservation o;
+     if (state_ == PositionTrackingState::Locked || state_ == PositionTrackingState::Weak) {
+         const double radius = (state_ == PositionTrackingState::Weak) ? kLocalRadiusWide : kLocalRadius;
+diff --git a/app/src/main/cpp/position/PositionMatcher.h b/app/src/main/cpp/position/PositionMatcher.h
+index 29e395b..c379319 100644
+--- a/app/src/main/cpp/position/PositionMatcher.h
++++ b/app/src/main/cpp/position/PositionMatcher.h
+@@ -19,7 +19,16 @@ public:
+     }
+     // Request a global re-acquisition from the main thread (JNI). The analyzer
+     // thread applies it on its next update() (no cross-thread state write).
+-    void requestReacquire() noexcept { reacquireRequested_.store(true, std::memory_order_release); }
++    void requestReacquire() noexcept {
++        localReacquireRequested_.store(false, std::memory_order_release);
++        reacquireRequested_.store(true, std::memory_order_release);
++    }
++    // Manual score scrub: trust the user-selected neighbourhood and resume with
++    // local DTW instead of immediately performing a global section search.
++    void requestLocalReacquire() noexcept {
++        reacquireRequested_.store(false, std::memory_order_release);
++        localReacquireRequested_.store(true, std::memory_order_release);
++    }
+     PositionObservation update(const FeatureRing& f, double predicted = 0.0) noexcept;
+     PositionTrackingState state() const noexcept { return state_; }
+ private:
+@@ -36,6 +45,7 @@ private:
+ 
+     DtwMatcher dtw_;
+     std::atomic<bool> reacquireRequested_{false}; // main thread -> analyzer thread
++    std::atomic<bool> localReacquireRequested_{false};
+     PositionTrackingState state_ = PositionTrackingState::Idle;
+     int stable_ = 0;       // consecutive agreeing observations (initial-lock stability)
+     int weakStreak_ = 0;   // consecutive weak observations (hysteresis before Reacquiring)
+diff --git a/app/src/main/java/com/einhander/temposcore/MainActivity.kt b/app/src/main/java/com/einhander/temposcore/MainActivity.kt
+index 3ed387f..cadd354 100644
+--- a/app/src/main/java/com/einhander/temposcore/MainActivity.kt
++++ b/app/src/main/java/com/einhander/temposcore/MainActivity.kt
+@@ -10,6 +10,7 @@ import android.view.Choreographer
+ import android.view.View
+ import android.widget.AdapterView
+ import android.widget.ArrayAdapter
++import android.widget.PopupMenu
+ import android.widget.SeekBar
+ import android.widget.Toast
+ import androidx.activity.result.contract.ActivityResultContracts
+@@ -19,6 +20,7 @@ import com.einhander.temposcore.databinding.ActivityMainBinding
+ import com.einhander.temposcore.midi.MidiFileParser
+ import com.einhander.temposcore.midi.MidiNote
+ import com.einhander.temposcore.midi.MidiScore
++import com.einhander.temposcore.score.NoteNaming
+ import com.einhander.temposcore.score.ScoreNavigator
+ import com.einhander.temposcore.score.TrackSelection
+ import com.einhander.temposcore.score.visibleNotes
+@@ -38,6 +40,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+     private var frameLoopActive = false
+     private lateinit var testAudioPlayer: TestAudioPlayer
+     private var testSeekUserDragging = false
++    private var noteNaming = NoteNaming.Letters
++    private var showTestMode = false
++    private var scoreScrubActive = false
++    private var scoreScrubPosition = 0.0
+ 
+     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+         if (uri != null) loadMidi(uri)
+@@ -60,6 +66,30 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+         binding = ActivityMainBinding.inflate(layoutInflater)
+         setContentView(binding.root)
+         testAudioPlayer = TestAudioPlayer(this, this)
++        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
++        noteNaming = when (prefs.getString(KEY_NOTE_NAMING, NoteNaming.Letters.name)) {
++            NoteNaming.Solfege.name -> NoteNaming.Solfege
++            else -> NoteNaming.Letters
++        }
++        showTestMode = prefs.getBoolean(KEY_SHOW_TEST_MODE, false)
++        applyTestModeVisibility()
++
++        binding.settingsButton.setOnClickListener { showSettingsMenu() }
++
++        binding.scoreView.onPositionScrubStart = { position ->
++            scoreScrubActive = true
++            scoreScrubPosition = position
++        }
++        binding.scoreView.onPositionScrubChanged = { position ->
++            scoreScrubPosition = position
++            updateUiFromTransport()
++        }
++        binding.scoreView.onPositionScrubFinished = { position ->
++            scoreScrubPosition = position
++            scoreScrubActive = false
++            if (nativeInitialized) NativeAudioBridge.setManualPosition(position)
++            updateUiFromTransport()
++        }
+ 
+         binding.loadMidiButton.setOnClickListener {
+             openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+@@ -166,8 +196,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+                         NativeAudioBridge.stop()
+                     }
+                     score = parsed
+-                    trackSelection = TrackSelection.All
+-                    visibleNotes = parsed.notes
++                    val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
++                    trackSelection = if (defaultTrack != null) TrackSelection.Track(defaultTrack) else TrackSelection.All
++                    visibleNotes = parsed.visibleNotes(trackSelection)
+                     binding.scoreView.trackSelection = trackSelection
+                     populateTrackSelector(parsed)
+                     expectedBpm = parsed.initialBpm
+@@ -192,7 +223,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+ 
+     private fun populateTrackSelector(score: MidiScore) {
+         if (score.tracks.size > 1) {
+-            val items = listOf(getString(R.string.all_tracks)) + score.tracks.map { ScoreNavigator.trackLabel(it) }
++            val items = listOf(getString(R.string.all_tracks)) +
++                score.tracks.map { ScoreNavigator.trackLabel(it, noteNaming) }
+             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
+                 setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+             }
+@@ -201,10 +233,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+             // selection index is out of range of the new adapter.
+             spinnerPopulating = true
+             binding.trackSpinner.adapter = adapter
+-            binding.trackSpinner.setSelection(0)
++            val selection = when (val selected = trackSelection) {
++                TrackSelection.All -> 0
++                is TrackSelection.Track -> (selected.index + 1).coerceIn(1, items.lastIndex)
++            }
++            binding.trackSpinner.setSelection(selection, false)
+             spinnerPopulating = false
+             binding.trackSelectorRow.visibility = View.VISIBLE
+         } else {
++            // A single-track MIDI still defaults to that track rather than All.
++            trackSelection = TrackSelection.Track(0)
++            visibleNotes = score.visibleNotes(trackSelection)
++            binding.scoreView.trackSelection = trackSelection
+             binding.trackSpinner.adapter = null
+             binding.trackSelectorRow.visibility = View.GONE
+         }
+@@ -269,7 +309,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+     private fun updateUiFromTransport() {
+         val localScore = score ?: return
+         val state = if (nativeInitialized) NativeAudioBridge.state() else return
+-        val pos = state.quarterBeatPosition.coerceAtLeast(0.0)
++        val pos = if (scoreScrubActive) scoreScrubPosition else state.quarterBeatPosition.coerceAtLeast(0.0)
+         val barBeat = ScoreNavigator.barBeatAt(localScore, pos)
+         val now = ScoreNavigator.soundingNotes(localScore, visibleNotes, pos)
+         val next = ScoreNavigator.nextNotes(localScore, visibleNotes, pos)
+@@ -277,7 +317,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+         // Tempo map (spec §26): update the native expected BPM only when the
+         // transport crosses a tempo region — not on every frame.
+         val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, pos)
+-        if (abs(regionBpm - expectedBpm) > 0.5) {
++        if (!scoreScrubActive && abs(regionBpm - expectedBpm) > 0.5) {
+             expectedBpm = regionBpm
+             if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm)
+         }
+@@ -298,8 +338,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+             barBeat.numerator,
+             barBeat.denominator,
+         )
+-        binding.nowText.text = "Now: ${ScoreNavigator.noteList(now)}"
+-        binding.nextText.text = "Next: ${ScoreNavigator.noteList(next)}"
++        binding.nowText.text = "Now: ${ScoreNavigator.noteList(now, noteNaming)}"
++        binding.nextText.text = "Next: ${ScoreNavigator.noteList(next, noteNaming)}"
+         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
+         binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
+         binding.positionStatusText.text = formatPositionStatus(state)
+@@ -313,6 +353,48 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+         }
+     }
+ 
++    private fun showSettingsMenu() {
++        val popup = PopupMenu(this, binding.settingsButton)
++        val letters = popup.menu.add(1, MENU_NOTATION_LETTERS, 0, getString(R.string.notation_letters))
++        val solfege = popup.menu.add(1, MENU_NOTATION_SOLFEGE, 1, getString(R.string.notation_solfege))
++        popup.menu.setGroupCheckable(1, true, true)
++        letters.isChecked = noteNaming == NoteNaming.Letters
++        solfege.isChecked = noteNaming == NoteNaming.Solfege
++        popup.menu.add(2, MENU_SHOW_TEST_MODE, 2, getString(R.string.show_test_mode)).apply {
++            isCheckable = true
++            isChecked = showTestMode
++        }
++        popup.setOnMenuItemClickListener { item ->
++            when (item.itemId) {
++                MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
++                MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
++                MENU_SHOW_TEST_MODE -> {
++                    showTestMode = !showTestMode
++                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
++                        .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
++                    if (!showTestMode) testAudioPlayer.stop()
++                    applyTestModeVisibility()
++                    true
++                }
++                else -> false
++            }
++        }
++        popup.show()
++    }
++
++    private fun setNoteNaming(value: NoteNaming) {
++        if (noteNaming == value) return
++        noteNaming = value
++        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
++            .putString(KEY_NOTE_NAMING, value.name).apply()
++        score?.let { populateTrackSelector(it) }
++        updateUiFromTransport()
++    }
++
++    private fun applyTestModeVisibility() {
++        binding.testControlsContainer.visibility = if (showTestMode) View.VISIBLE else View.GONE
++    }
++
+     private fun loadTestAudio(uri: Uri) {
+         val name = displayName(uri) ?: "test audio"
+         testAudioPlayer.load(uri)
+@@ -378,4 +460,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
+             cursor?.close()
+         }
+     }
++    companion object {
++        private const val PREFS_NAME = "temposcore_settings"
++        private const val KEY_NOTE_NAMING = "note_naming"
++        private const val KEY_SHOW_TEST_MODE = "show_test_mode"
++        private const val MENU_NOTATION_LETTERS = 1
++        private const val MENU_NOTATION_SOLFEGE = 2
++        private const val MENU_SHOW_TEST_MODE = 3
++    }
++
+ }
+diff --git a/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt b/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
+index c51deeb..a2f770f 100644
+--- a/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
++++ b/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
+@@ -17,6 +17,7 @@ object NativeAudioBridge {
+     external fun stop()
+     external fun setExpectedBpm(bpm: Double)
+     external fun resetPosition(startQuarterBeat: Double)
++    external fun setManualPosition(startQuarterBeat: Double)
+     external fun setScoreReference(ppq: Int, totalTicks: Long, noteChannels: IntArray, notePitches: IntArray, noteVelocities: IntArray, noteStarts: LongArray, noteEnds: LongArray, tempoTicks: LongArray, tempoValues: IntArray)
+     external fun requestGlobalReacquire()
+     private external fun getStateRaw(): DoubleArray
+diff --git a/app/src/main/java/com/einhander/temposcore/score/NoteNaming.kt b/app/src/main/java/com/einhander/temposcore/score/NoteNaming.kt
+new file mode 100644
+index 0000000..63d1b21
+--- /dev/null
++++ b/app/src/main/java/com/einhander/temposcore/score/NoteNaming.kt
+@@ -0,0 +1,6 @@
++package com.einhander.temposcore.score
++
++enum class NoteNaming {
++    Letters,
++    Solfege,
++}
+diff --git a/app/src/main/java/com/einhander/temposcore/score/ScoreNavigator.kt b/app/src/main/java/com/einhander/temposcore/score/ScoreNavigator.kt
+index 85b8d13..42e068e 100644
+--- a/app/src/main/java/com/einhander/temposcore/score/ScoreNavigator.kt
++++ b/app/src/main/java/com/einhander/temposcore/score/ScoreNavigator.kt
+@@ -64,23 +64,25 @@ object ScoreNavigator {
+         )
+     }
+ 
+-    fun pitchName(pitch: Int): String {
+-        val names = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
++    fun pitchName(pitch: Int, naming: NoteNaming = NoteNaming.Letters): String {
++        val letterNames = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
++        val solfegeNames = arrayOf("До", "До♯", "Ре", "Ре♯", "Ми", "Фа", "Фа♯", "Соль", "Соль♯", "Ля", "Ля♯", "Си")
+         val p = pitch.coerceIn(0, 127)
++        val names = if (naming == NoteNaming.Solfege) solfegeNames else letterNames
+         return names[p % 12] + (p / 12 - 1)
+     }
+ 
+-    fun trackLabel(track: MidiTrackInfo): String {
++    fun trackLabel(track: MidiTrackInfo, naming: NoteNaming = NoteNaming.Letters): String {
+         var label = "Track ${track.index + 1}"
+         if (!track.name.isNullOrBlank()) label += " — ${track.name}"
+         label += if (track.pitchMin != null && track.pitchMax != null) {
+-            " • ${track.noteCount} notes, ${pitchName(track.pitchMin)}–${pitchName(track.pitchMax)}"
++            " • ${track.noteCount} notes, ${pitchName(track.pitchMin, naming)}–${pitchName(track.pitchMax, naming)}"
+         } else " • no notes"
+         return label
+     }
+ 
+-    fun noteList(notes: List<MidiNote>): String =
+-        if (notes.isEmpty()) "—" else notes.joinToString(" ") { pitchName(it.pitch) }
++    fun noteList(notes: List<MidiNote>, naming: NoteNaming = NoteNaming.Letters): String =
++        if (notes.isEmpty()) "—" else notes.joinToString(" ") { pitchName(it.pitch, naming) }
+ 
+     // --- Tempo map (spec §26) -------------------------------------------------
+ 
+diff --git a/app/src/main/java/com/einhander/temposcore/ui/ScoreStaffView.kt b/app/src/main/java/com/einhander/temposcore/ui/ScoreStaffView.kt
+index 5509be1..da3cfd3 100644
+--- a/app/src/main/java/com/einhander/temposcore/ui/ScoreStaffView.kt
++++ b/app/src/main/java/com/einhander/temposcore/ui/ScoreStaffView.kt
+@@ -5,6 +5,7 @@ import android.graphics.Canvas
+ import android.graphics.Paint
+ import android.graphics.RectF
+ import android.util.AttributeSet
++import android.view.MotionEvent
+ import android.view.View
+ import com.einhander.temposcore.midi.MidiScore
+ import com.einhander.temposcore.score.TrackSelection
+@@ -62,6 +63,53 @@ class ScoreStaffView @JvmOverloads constructor(
+             invalidate()
+         }
+ 
++    var onPositionScrubStart: ((Double) -> Unit)? = null
++    var onPositionScrubChanged: ((Double) -> Unit)? = null
++    var onPositionScrubFinished: ((Double) -> Unit)? = null
++
++    private var scrubbing = false
++    private var scrubStartX = 0f
++    private var scrubStartPosition = 0.0
++
++    private fun pixelsPerQuarterBeat(): Float = max(52f, width.toFloat() / 10f)
++
++    override fun onTouchEvent(event: MotionEvent): Boolean {
++        val localScore = score ?: return false
++        when (event.actionMasked) {
++            MotionEvent.ACTION_DOWN -> {
++                scrubbing = true
++                scrubStartX = event.x
++                scrubStartPosition = quarterBeatPosition
++                parent?.requestDisallowInterceptTouchEvent(true)
++                onPositionScrubStart?.invoke(scrubStartPosition)
++                return true
++            }
++            MotionEvent.ACTION_MOVE -> {
++                if (!scrubbing) return false
++                val deltaBeats = (event.x - scrubStartX) / pixelsPerQuarterBeat()
++                val maxBeat = localScore.tickToQuarterBeats(localScore.totalTicks)
++                val newPosition = (scrubStartPosition - deltaBeats).coerceIn(0.0, maxBeat)
++                quarterBeatPosition = newPosition
++                onPositionScrubChanged?.invoke(newPosition)
++                return true
++            }
++            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
++                if (!scrubbing) return false
++                scrubbing = false
++                parent?.requestDisallowInterceptTouchEvent(false)
++                onPositionScrubFinished?.invoke(quarterBeatPosition)
++                if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
++                return true
++            }
++        }
++        return super.onTouchEvent(event)
++    }
++
++    override fun performClick(): Boolean {
++        super.performClick()
++        return true
++    }
++
+     override fun onDraw(canvas: Canvas) {
+         super.onDraw(canvas)
+         val w = width.toFloat()
+@@ -84,7 +132,7 @@ class ScoreStaffView @JvmOverloads constructor(
+             return
+         }
+ 
+-        val pixelsPerQuarterBeat = max(52f, w / 10f)
++        val pixelsPerQuarterBeat = pixelsPerQuarterBeat()
+         val pastWindow = 2.5
+         val futureWindow = 8.0
+         val minBeat = quarterBeatPosition - pastWindow
+diff --git a/app/src/main/res/layout/activity_main.xml b/app/src/main/res/layout/activity_main.xml
+index ae1361f..ede73e3 100644
+--- a/app/src/main/res/layout/activity_main.xml
++++ b/app/src/main/res/layout/activity_main.xml
+@@ -33,6 +33,13 @@
+             android:enabled="false"
+             android:text="@string/reset_position" />
+ 
++        <Button
++            android:id="@+id/settingsButton"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="8dp"
++            android:text="@string/settings" />
++
+         <TextView
+             android:id="@+id/fileNameText"
+             android:layout_width="0dp"
+@@ -47,12 +54,19 @@
+     </LinearLayout>
+ 
+     <LinearLayout
+-        android:id="@+id/testControlsRow"
++        android:id="@+id/testControlsContainer"
+         android:layout_width="match_parent"
+         android:layout_height="wrap_content"
+-        android:layout_marginTop="8dp"
+-        android:gravity="center_vertical"
+-        android:orientation="horizontal">
++        android:orientation="vertical"
++        android:visibility="gone">
++
++        <LinearLayout
++            android:id="@+id/testControlsRow"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="8dp"
++            android:gravity="center_vertical"
++            android:orientation="horizontal">
+ 
+         <TextView
+             android:layout_width="wrap_content"
+@@ -107,14 +121,15 @@
+             android:layout_height="wrap_content"
+             android:layout_marginStart="8dp"
+             android:text="0:00 / 0:00" />
+-    </LinearLayout>
++        </LinearLayout>
+ 
+-    <SeekBar
+-        android:id="@+id/testSeekBar"
+-        android:layout_width="match_parent"
+-        android:layout_height="wrap_content"
+-        android:enabled="false"
+-        android:max="1000" />
++        <SeekBar
++            android:id="@+id/testSeekBar"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:enabled="false"
++            android:max="1000" />
++    </LinearLayout>
+ 
+     <LinearLayout
+         android:id="@+id/trackSelectorRow"
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index 3cc2eb2..9e84625 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -15,4 +15,8 @@
+     <string name="test_restart">Restart</string>
+     <string name="test_stop">Stop</string>
+     <string name="no_test_audio">No test audio</string>
++    <string name="settings">Settings</string>
++    <string name="notation_letters">Notation: A B C</string>
++    <string name="notation_solfege">Notation: До Ре Ми</string>
++    <string name="show_test_mode">Show test mode</string>
+ </resources>

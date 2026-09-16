@@ -1,0 +1,402 @@
+--- a/app/src/main/cpp/position/DtwMatcher.cpp
++++ b/app/src/main/cpp/position/DtwMatcher.cpp
+@@ -26,8 +26,11 @@
+     const auto& ref = reference_.frames();
+     if (ref.empty() || stepFrames == 0) return;
+     struct Cand { float score; size_t start; };
+-    std::array<Cand, 8> top{};
+-    size_t topN = 0;
++    // Keep a larger raw pool first.  Without this, top-8 is often eight nearby
++    // timestamps from ONE chorus/bar and a genuinely repeated section never
++    // reaches the fine matcher, making ambiguity look artificially high.
++    std::array<Cand, 64> raw{};
++    size_t rawN = 0;
+     for (size_t s = 0; s < ref.size(); s += stepFrames) {
+         float sum = 0.0f;
+         int cnt = 0;
+@@ -46,16 +49,28 @@
+         }
+         if (cnt < static_cast<int>(n / 2)) continue;
+         const float score = sum / static_cast<float>(cnt);
+-        if (topN < 8) {
+-            top[topN++] = {score, s};
+-            for (size_t k = topN; k > 1 && top[k - 1].score > top[k - 2].score; --k) std::swap(top[k - 1], top[k - 2]);
+-        } else if (score > top[7].score) {
+-            top[7] = {score, s};
+-            for (size_t k = 7; k > 0 && top[k].score > top[k - 1].score; --k) std::swap(top[k], top[k - 1]);
++        if (rawN < raw.size()) {
++            raw[rawN++] = {score, s};
++            for (size_t k = rawN; k > 1 && raw[k - 1].score > raw[k - 2].score; --k)
++                std::swap(raw[k - 1], raw[k - 2]);
++        } else if (score > raw.back().score) {
++            raw.back() = {score, s};
++            for (size_t k = raw.size() - 1; k > 0 && raw[k].score > raw[k - 1].score; --k)
++                std::swap(raw[k], raw[k - 1]);
++        }
++    }
++    // Non-maximum suppression in time: each coarse candidate should represent
++    // a different musical neighbourhood, not a shifted alignment of the same
++    // live window.  Use ~80% of the current context (capped at 8 s).
++    const size_t kMinCandidateSeparationFrames = std::max<size_t>(20, std::min<size_t>(80, n * 4 / 5));
++    for (size_t i = 0; i < rawN && outCount < out.size(); ++i) {
++        bool nearExisting = false;
++        for (size_t j = 0; j < outCount; ++j) {
++            const size_t d = raw[i].start > out[j] ? raw[i].start - out[j] : out[j] - raw[i].start;
++            if (d < kMinCandidateSeparationFrames) { nearExisting = true; break; }
+         }
++        if (!nearExisting) out[outCount++] = raw[i].start;
+     }
+-    for (size_t i = 0; i < topN; ++i) out[i] = top[i].start;
+-    outCount = topN;
+ }
+ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, bool localSearch,
+                                       double radiusSec, const size_t* startList, size_t startCount) noexcept {
+@@ -71,13 +86,33 @@
+     struct Cand { float cost; size_t s; size_t current; };
+     std::array<Cand, 16> top{};
+     size_t topN = 0;
++    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
++    const double hypothesisSeparationSeconds = std::max(2.0, std::min(8.0, 0.8 * liveSpanSeconds));
+     auto consider = [&](float cost, size_t s, size_t current) {
++        // Collapse neighbouring alignments of the same physical match.  The
++        // retained alternatives must be genuinely different score locations;
++        // otherwise a repeated bar/chorus can disappear from second-best.
++        for (size_t i = 0; i < topN; ++i) {
++            if (std::abs(ref[top[i].current].nominalSeconds - ref[current].nominalSeconds)
++                    < hypothesisSeparationSeconds) {
++                if (cost < top[i].cost) {
++                    top[i] = {cost, s, current};
++                    while (i > 0 && top[i].cost < top[i - 1].cost) {
++                        std::swap(top[i], top[i - 1]);
++                        --i;
++                    }
++                }
++                return;
++            }
++        }
+         if (topN < 16) {
+             top[topN++] = {cost, s, current};
+-            for (size_t k = topN; k > 1 && top[k - 1].cost < top[k - 2].cost; --k) std::swap(top[k - 1], top[k - 2]);
++            for (size_t k = topN; k > 1 && top[k - 1].cost < top[k - 2].cost; --k)
++                std::swap(top[k - 1], top[k - 2]);
+         } else if (cost < top[15].cost) {
+             top[15] = {cost, s, current};
+-            for (size_t k = 15; k > 0 && top[k].cost < top[k - 1].cost; --k) std::swap(top[k], top[k - 1]);
++            for (size_t k = 15; k > 0 && top[k].cost < top[k - 1].cost; --k)
++                std::swap(top[k], top[k - 1]);
+         }
+     };
+ 
+@@ -98,8 +133,6 @@
+                 ? it->nominalSeconds : prev->nominalSeconds;
+         }
+     }
+-    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
+-
+     const size_t nCand = (startList != nullptr) ? startCount : ref.size();
+     for (size_t ci = 0; ci < nCand; ++ci) {
+         const size_t s = (startList != nullptr) ? startList[ci] : ci;
+@@ -112,11 +145,11 @@
+             const double prefilterRadius = radiusSec + 0.55 * liveSpanSeconds;
+             if (std::abs(approxEndSeconds - predictedSeconds) > prefilterRadius) continue;
+         }
+-        if (ref.size() - s <= ((n - 1) * 65 / 100)) continue;
++        if (ref.size() - s <= ((n - 1) * 78 / 100)) continue;
+         dp_[0] = frameDistance(live_[0], ref[s]);
+         for (size_t i = 1; i < n; ++i) {
+-            const size_t lo = i * 65 / 100, hi = std::min({i * 150 / 100, ref.size() - s - 1, MaxBand - 1});
+-            const size_t loPrev = (i - 1) * 65 / 100, hiPrev = std::min({(i - 1) * 150 / 100, ref.size() - s - 1, MaxBand - 1});
++            const size_t lo = i * 78 / 100, hi = std::min({i * 130 / 100, ref.size() - s - 1, MaxBand - 1});
++            const size_t loPrev = (i - 1) * 78 / 100, hiPrev = std::min({(i - 1) * 130 / 100, ref.size() - s - 1, MaxBand - 1});
+             std::fill(dp_.begin() + i * MaxBand + lo, dp_.begin() + i * MaxBand + hi + 1, 1e30f);
+             for (size_t k = lo; k <= hi; ++k) {
+                 float prev = 1e30f;
+@@ -126,7 +159,7 @@
+                 if (prev < 1e30f) dp_[i * MaxBand + k] = prev + frameDistance(live_[i], ref[s + k]);
+             }
+         }
+-        const size_t lo = (n - 1) * 65 / 100, hi = std::min({(n - 1) * 150 / 100, ref.size() - s - 1, MaxBand - 1});
++        const size_t lo = (n - 1) * 78 / 100, hi = std::min({(n - 1) * 130 / 100, ref.size() - s - 1, MaxBand - 1});
+         float cost = 1e30f;
+         size_t end = lo;
+         for (size_t k = lo; k <= hi; ++k) if (dp_[(n - 1) * MaxBand + k] < cost) { cost = dp_[(n - 1) * MaxBand + k]; end = k; }
+@@ -140,8 +173,11 @@
+         if (localSearch) {
+             // Continuity prior is applied to the aligned CURRENT position, not
+             // the start of the rolling context window.
+-            cost += 0.001f * static_cast<float>(
+-                std::min(radiusSec, std::abs(currentSeconds - predictedSeconds)));
++            // Repeated measures need a meaningful continuity preference.
++            // Cap the penalty so a genuinely different, much stronger acoustic
++            // match can still win and trigger Weak/Reacquiring.
++            const double distanceSeconds = std::abs(currentSeconds - predictedSeconds);
++            cost += 0.015f * static_cast<float>(std::min(8.0, distanceSeconds));
+         }
+         consider(cost, s, current);
+     }
+--- a/app/src/main/cpp/position/PositionMatcher.h
++++ b/app/src/main/cpp/position/PositionMatcher.h
+@@ -47,8 +47,8 @@
+     static constexpr float kRelocate = 0.88f;    // allow a hard relocation / initial lock
+     static constexpr float kWeakExit = 0.60f;    // leave Locked below this (hysteresis)
+     static constexpr int kWeakToReacquire = 3;   // consecutive weak before Reacquiring
+-    static constexpr double kLocalRadius = 30.0;    // seconds (Locked)
+-    static constexpr double kLocalRadiusWide = 60.0; // seconds (Weak, widened)
++    static constexpr double kLocalRadius = 8.0;     // seconds (Locked: stay near the running path)
++    static constexpr double kLocalRadiusWide = 20.0; // seconds (Weak, widened before global reacquire)
+     static constexpr size_t kTopK = 8;
+     static constexpr size_t kCoarseStep = 5; // frames (0.5 s at 10 Hz)
+ };
+--- a/app/src/main/cpp/transport/LiveTransport.cpp
++++ b/app/src/main/cpp/transport/LiveTransport.cpp
+@@ -16,6 +16,9 @@
+     positionRt_ = std::max(0.0, startQuarterBeat);
+     publishedBpm_.store(currentBpmRt_, std::memory_order_relaxed);
+     publishedPosition_.store(positionRt_, std::memory_order_relaxed);
++    remainingPositionErrorRt_ = 0.0;
++    correctionValid_.store(false, std::memory_order_relaxed);
++    correctionGeneration_.fetch_add(1, std::memory_order_release);
+     tempoTargetBpm_.store(0.0); tempoTargetConfidence_.store(0.0f);
+     tempoTargetValid_.store(false); tempoDetectedBpm_.store(0.0); tempoRms_.store(0.0);
+     tempoVersion_.fetch_add(2, std::memory_order_release);
+@@ -47,7 +50,9 @@
+     publishedPositionConfidence_.store(0.0,std::memory_order_relaxed);
+     publishedPositionError_.store(0.0,std::memory_order_relaxed);
+     publishedAmbiguity_.store(0.0,std::memory_order_relaxed);
+-    targetActive_.store(false,std::memory_order_relaxed);
++    correctionValid_.store(false,std::memory_order_relaxed);
++    correctionErrorBeats_.store(0.0,std::memory_order_relaxed);
++    correctionGeneration_.fetch_add(1,std::memory_order_release);
+     tempoVersion_.fetch_add(1, std::memory_order_relaxed);
+     tempoTargetValid_.store(false, std::memory_order_release);
+     tempoTargetBpm_.store(0.0, std::memory_order_relaxed);
+@@ -66,16 +71,23 @@
+     publishedMatchedPosition_.store(o.quarterBeatPosition,std::memory_order_relaxed);
+     // Read the published position (atomic) — not the RT positionRt_ (plain,
+     // written by the Oboe callback) — to avoid a cross-thread data race.
+-    publishedPositionError_.store(o.quarterBeatPosition - publishedPosition_.load(std::memory_order_relaxed),std::memory_order_relaxed);
++    const double predicted = publishedPosition_.load(std::memory_order_relaxed);
++    const double errorBeats = o.quarterBeatPosition - predicted;
++    publishedPositionError_.store(errorBeats,std::memory_order_relaxed);
+     publishedPositionState_.store(static_cast<int>(o.state),std::memory_order_relaxed);
+     publishedAmbiguity_.store(o.ambiguityMargin,std::memory_order_relaxed);
+     publishedValidContextSeconds_.store(validContextSeconds,std::memory_order_relaxed);
+-    if (!o.valid) return; // only a confident match sets a correction target
+-    targetPosition_.store(o.quarterBeatPosition,std::memory_order_relaxed);
+-    targetConfidence_.store(o.confidence,std::memory_order_relaxed);
+-    targetAmbiguity_.store(o.ambiguityMargin,std::memory_order_relaxed);
+-    targetGlobal_.store(o.globalMatch,std::memory_order_relaxed);
+-    targetActive_.store(true,std::memory_order_release);
++
++    // Publish each observation as an ERROR OFFSET.  A frozen target position is
++    // wrong here: while a 2-4 beat correction is being slewed, both the player
++    // and transport continue advancing.  Chasing the old absolute target causes
++    // the cursor to remain late at section boundaries.
++    correctionErrorBeats_.store(errorBeats,std::memory_order_relaxed);
++    correctionConfidence_.store(o.confidence,std::memory_order_relaxed);
++    correctionAmbiguity_.store(o.ambiguityMargin,std::memory_order_relaxed);
++    correctionGlobal_.store(o.globalMatch,std::memory_order_relaxed);
++    correctionValid_.store(o.valid,std::memory_order_relaxed);
++    correctionGeneration_.fetch_add(1,std::memory_order_release);
+ }
+ 
+ void LiveTransport::submitTempoObservation(const BeatObservation& observation) noexcept {
+@@ -100,6 +112,7 @@
+     const uint64_t generation = positionGeneration_.load(std::memory_order_acquire);
+     if (generation != appliedPositionGeneration_) {
+         positionRt_ = requestedPosition_.load(std::memory_order_relaxed);
++        remainingPositionErrorRt_ = 0.0;
+         appliedPositionGeneration_ = generation;
+     }
+ 
+@@ -127,38 +140,52 @@
+                                expectedBpmRt_ * 1.80);
+ 
+     positionRt_ += (currentBpmRt_ / 60.0) * (static_cast<double>(numFrames) / sampleRate);
+-    if (targetActive_.load(std::memory_order_acquire)) {
+-        const double target = targetPosition_.load(std::memory_order_relaxed);
+-        const double conf = targetConfidence_.load(std::memory_order_relaxed);
+-        const double ambig = targetAmbiguity_.load(std::memory_order_relaxed);
+-        const bool isGlobal = targetGlobal_.load(std::memory_order_relaxed);
+-        const double error = target - positionRt_;
+-        const double a = std::abs(error);
+-        const bool strong = conf >= .88 && ambig < .05;
+-        if (a < .5) {
+-            // Converged: snap the remainder and retire the target.
+-            positionRt_ += error;
+-            targetActive_.store(false, std::memory_order_relaxed);
+-        } else if (a <= 4) {
+-            // Rate-limited slew toward the target on EVERY callback: the slew
+-            // is capped at 0.4 beat/s and decays with the remaining error
+-            // (P-control: 10% of the error per second, capped at 0.4 beat/s).
+-            // The target persists until the cursor reaches it, so the slew is
+-            // applied every callback (not once per ~2 s observation, which would
+-            // be ~200x too slow). The total approach is faster at normal BPM
+-            // because the frame-driven advance also moves the cursor.
+-            const double dt = static_cast<double>(numFrames) / sampleRate;
+-            const double rate = std::min(0.4, 0.1 * a);
+-            positionRt_ += std::clamp(error, -rate * dt, rate * dt);
+-        } else if (strong || (isGlobal && conf >= 0.5)) {
+-            // Hard relocation: a large error is applied only for a strong
+-            // (high-confidence, low-ambiguity) match or a confident initial
+-            // global lock. An ambiguous large error is rejected (no false jump).
+-            positionRt_ += error;
+-            targetActive_.store(false, std::memory_order_relaxed);
++
++    // Latch a new slow-loop observation once.  The RT loop then owns the
++    // remaining offset; it must NOT repeatedly chase a frozen absolute target.
++    const uint64_t correctionGeneration = correctionGeneration_.load(std::memory_order_acquire);
++    if (correctionGeneration != appliedCorrectionGeneration_) {
++        appliedCorrectionGeneration_ = correctionGeneration;
++        const bool corrValid = correctionValid_.load(std::memory_order_relaxed);
++        if (!corrValid) {
++            remainingPositionErrorRt_ = 0.0;
++        } else {
++            const double error = correctionErrorBeats_.load(std::memory_order_relaxed);
++            const double conf = correctionConfidence_.load(std::memory_order_relaxed);
++            const double ambig = correctionAmbiguity_.load(std::memory_order_relaxed);
++            const bool isGlobal = correctionGlobal_.load(std::memory_order_relaxed);
++            const double a = std::abs(error);
++            // ambiguityMargin is second-best minus best: LARGER means more unique.
++            const bool unique = ambig >= .05;
++            const bool strong = conf >= .88 && unique;
++            if (a > 4.0) {
++                // Never relocate to a repeated/look-alike section merely because
++                // it is the current top-1.  Initial/global relocation also needs
++                // a reasonably unique, high-confidence observation.
++                if (strong || (isGlobal && conf >= .80 && unique)) positionRt_ += error;
++                remainingPositionErrorRt_ = 0.0;
++            } else {
++                remainingPositionErrorRt_ = error;
++            }
++        }
++    }
++
++    if (std::abs(remainingPositionErrorRt_) > 1e-6) {
++        const double a = std::abs(remainingPositionErrorRt_);
++        if (a < .50) {
++            // Tiny phase error: remove it immediately; this is below a visible
++            // fraction of a beat and avoids a permanently biased cursor.
++            positionRt_ += remainingPositionErrorRt_;
++            remainingPositionErrorRt_ = 0.0;
+         } else {
+-            // Large + ambiguous: reject the target (do not jump).
+-            targetActive_.store(false, std::memory_order_relaxed);
++            const double dt = static_cast<double>(numFrames) / sampleRate;
++            // Correct the OFFSET while the nominal song position keeps moving.
++            // Faster than the old 0.1*error P-loop, but still bounded to avoid a
++            // visible jump when the matcher is a beat or two off.
++            const double rate = std::min(0.50, std::max(0.15, 0.20 * a));
++            const double step = std::clamp(remainingPositionErrorRt_, -rate * dt, rate * dt);
++            positionRt_ += step;
++            remainingPositionErrorRt_ -= step;
+         }
+     }
+     positionRt_ = std::max(0.0, positionRt_);
+--- a/app/src/main/cpp/transport/LiveTransport.h
++++ b/app/src/main/cpp/transport/LiveTransport.h
+@@ -71,13 +71,15 @@
+     std::atomic<int> publishedPositionState_{0};
+     std::atomic<double> publishedAmbiguity_{0.0};
+     std::atomic<double> publishedValidContextSeconds_{0.0};
+-    // Persistent position-correction target (single writer = analyzer thread via
+-    // submitPositionObservation, single reader = processFrames on the Oboe
+-    // callback). The target stays active and is slewed toward on EVERY callback
+-    // (rate-limited) until the cursor reaches it (|err|<0.5) or it is rejected
+-    // (large + ambiguous). targetActive_ is the release/acquire handshake.
+-    std::atomic<double> targetPosition_{0.0}, targetConfidence_{0.0}, targetAmbiguity_{1.0};
+-    std::atomic<bool> targetActive_{false}, targetGlobal_{false};
++    // Position-correction mailbox.  Store an OFFSET observation, not a frozen
++    // absolute score position: the song keeps advancing while a correction is
++    // being slewed.  processFrames copies each new generation into the RT-only
++    // remainingPositionErrorRt_ and then drives that error toward zero.
++    std::atomic<double> correctionErrorBeats_{0.0}, correctionConfidence_{0.0}, correctionAmbiguity_{0.0};
++    std::atomic<bool> correctionValid_{false}, correctionGlobal_{false};
++    std::atomic<uint64_t> correctionGeneration_{0};
++    uint64_t appliedCorrectionGeneration_ = 0;
++    double remainingPositionErrorRt_ = 0.0;
+ };
+ 
+ } // namespace temposcore
+--- a/app/src/main/cpp/tests/host/test_position.cpp
++++ b/app/src/main/cpp/tests/host/test_position.cpp
+@@ -16,7 +16,7 @@
+ void test_position_wrong(){auto r=makeRef();auto good=DtwMatcher(r).global(makeLive(r));FeatureRing q;for(int i=0;i<10;++i){AudioFeatureFrame f;f.valid=true;f.chroma[11]=1;q.push(f);}CHECK(good.matchQuality>DtwMatcher(r).global(q).matchQuality+.001f);}
+ // T4: a genuinely repeated section. Both occurrences get close scores AND the
+ // ambiguity margin is LOW (the non-neighbour second-best is the other occurrence).
+-void test_position_repeat(){auto r=makeRepeatRef();auto q=makeLiveFrom(r,0,10);auto o=DtwMatcher(r).global(q);CHECK(o.matchQuality>.5f);CHECK(o.ambiguityMargin<.5f);}
++void test_position_repeat(){auto r=makeRepeatRef();auto q=makeLiveFrom(r,0,10);DtwMatcher d(r);std::array<size_t,8> starts{};size_t count=0;d.coarseTopK(q,5,starts,count);bool sawFirst=false,sawSecond=false;for(size_t i=0;i<count;++i){sawFirst|=starts[i]<15;sawSecond|=starts[i]>=25&&starts[i]<45;}CHECK(sawFirst);CHECK(sawSecond);auto o=d.globalOn(q,starts,count);CHECK(o.matchQuality>.5f);CHECK(o.ambiguityMargin<.05f);}
+ // T5: continuity prior. Predicted near the 2nd occurrence; the local matcher
+ // must return the 2nd occurrence (near the prediction), clearly past the 1st.
+ void test_position_continuity(){auto r=makeRepeatRef();const double predicted=r.frames()[39].quarterBeatPosition;auto q=makeLiveFrom(r,30,10);auto o=DtwMatcher(r).localOn(q,predicted,30.0);CHECK_NEAR(o.quarterBeatPosition,r.frames()[39].quarterBeatPosition,.5);CHECK(o.quarterBeatPosition>r.frames()[10].quarterBeatPosition);}
+--- a/app/src/main/cpp/tests/host/test_position_matcher.cpp
++++ b/app/src/main/cpp/tests/host/test_position_matcher.cpp
+@@ -189,7 +189,7 @@
+     PositionObservation o;
+     o.quarterBeatPosition = 20.0; // error ~10 beats
+     o.confidence = 0.9f;
+-    o.ambiguityMargin = 0.3f; // ambiguous (>= 0.05)
++    o.ambiguityMargin = 0.02f; // ambiguous: best and second-best are nearly tied
+     o.valid = true;
+     o.globalMatch = false;
+     t.submitPositionObservation(o, 10.0);
+@@ -198,14 +198,14 @@
+     CHECK(pos < 12.0); // did not jump to 20
+ }
+ 
+-// (e4) Large error (>4 beats) applied when strong + low-ambiguity.
++// (e4) Large error (>4 beats) applied when strong + UNIQUE.
+ void test_transport_large_strong_applied() {
+     LiveTransport t;
+     t.configure(120.0, 10.0);
+     PositionObservation o;
+     o.quarterBeatPosition = 20.0; // error ~10 beats
+     o.confidence = 0.95f; // strong (>= 0.88)
+-    o.ambiguityMargin = 0.02f; // low ambiguity (< 0.05)
++    o.ambiguityMargin = 0.20f; // unique: clear best-vs-second margin
+     o.valid = true;
+     o.globalMatch = false;
+     t.submitPositionObservation(o, 10.0);
+@@ -221,7 +221,7 @@
+     PositionObservation o;
+     o.quarterBeatPosition = 20.0;
+     o.confidence = 0.9f;
+-    o.ambiguityMargin = 0.3f; // ambiguous, but...
++    o.ambiguityMargin = 0.3f; // unique enough for initial global relocation
+     o.valid = true;
+     o.globalMatch = true; // ...it is the initial global lock
+     t.submitPositionObservation(o, 10.0);
+@@ -230,6 +230,25 @@
+     CHECK(pos > 18.0);
+ }
+ 
++
++// A correction is an OFFSET, not a frozen absolute target.  Four seconds after
++// observing +3 beats at 120 BPM, the nominal cursor alone should have advanced
++// from 10 to 18; the still-active correction must put it clearly AHEAD of 18,
++// not stop chasing the stale absolute target 13.
++void test_transport_offset_slew_keeps_advancing() {
++    LiveTransport t;
++    t.configure(120.0, 10.0);
++    PositionObservation o;
++    o.quarterBeatPosition = 13.0;
++    o.confidence = 0.9f;
++    o.ambiguityMargin = 0.5f;
++    o.valid = true;
++    o.globalMatch = false;
++    t.submitPositionObservation(o, 10.0);
++    for (int i = 0; i < 400; ++i) t.processFrames(480, 48000); // 4 s
++    CHECK(t.snapshot().quarterBeatPosition > 19.0);
++}
++
+ static void test_transport_tempo_target_and_fallback() {
+     LiveTransport t; t.configure(120.0, 0.0);
+     BeatObservation o; o.detectedBpm = 90.0; o.confidence = 0.95f; o.rms = 0.2f;
+@@ -250,6 +269,7 @@
+ }
+ 
+ REGISTER_TEST(test_transport_tempo_target_and_fallback);
++REGISTER_TEST(test_transport_offset_slew_keeps_advancing);
+ REGISTER_TEST(test_matcher_acquire_lock);
+ REGISTER_TEST(test_matcher_degrade_reacquire);
+ REGISTER_TEST(test_matcher_silence_no_lock);

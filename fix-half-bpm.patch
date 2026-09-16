@@ -1,0 +1,71 @@
+--- a/app/src/main/cpp/beat/BeatTracker.cpp	2026-09-16 11:10:02.000000000 +0000
++++ b/app/src/main/cpp/beat/BeatTracker.cpp	2026-09-16 14:03:51.888452534 +0000
+@@ -67,10 +67,17 @@
+     for (int lag = boundedMinLag + 1; lag < boundedMaxLag; ++lag)
+         if (acValues[lag] >= acValues[lag - 1] && acValues[lag] >= acValues[lag + 1] && peakCount < 24)
+             peaks[peakCount++] = lag;
++    // Resolve the 1/2x / 1x / 2x ambiguity with the MIDI tempo prior.
++    // Keep this in the estimator too (not only in LiveTransport), otherwise
++    // detectedBpm can publish a stable half-time value such as 60 for MIDI 120.
++    const double expected = expectedBpm_.load(std::memory_order_relaxed);
++    const double minLiveBpm = std::max(40.0, expected * 0.55);
++    const double maxLiveBpm = std::min(240.0, expected * 1.80);
+     for (int p = 0; p < peakCount; ++p) {
+         const int lag = peaks[p];
+         const double bpm = featureRate_ * 60.0 / lag;
+-        const double distance = std::abs(std::log2(bpm / expectedBpm_.load(std::memory_order_relaxed)));
++        if (bpm < minLiveBpm || bpm > maxLiveBpm) continue;
++        const double distance = std::abs(std::log2(bpm / expected));
+         const double ac = acValues[lag];
+         const double family = ac + 0.35 * correlationAt(lag * 2) + 0.20 * correlationAt(lag * 4);
+         scores[lag] = family + 0.15 * std::exp(-0.5 * std::pow(distance / 0.5, 2.0));
+@@ -81,6 +88,10 @@
+         if (score > best) { second = best; best = score; chosen = featureRate_ * 60.0 / peaks[p]; }
+         else if (score > second) second = score;
+     }
++    if (chosen <= 0.0 || best <= 0.0) {
++        confidence_ = 0.0f;
++        return 0.0;
++    }
+     const float context = std::min(1.0f, static_cast<float>(historySize_ / (featureRate_ * 6.0)));
+     const double uniqueness = peakCount >= 2 ? (best - second) : 0.0;
+     confidence_ = std::clamp(static_cast<float>(0.45 * best + 0.9 * uniqueness + 0.35 * context), 0.0f, 1.0f);
+--- a/app/src/main/cpp/tests/host/test_beat_tracker.cpp	2026-09-16 11:10:02.000000000 +0000
++++ b/app/src/main/cpp/tests/host/test_beat_tracker.cpp	2026-09-16 14:03:51.888598565 +0000
+@@ -41,6 +41,28 @@
+     CHECK_NEAR(out.detectedBpm, 90.0, 6.0);
+ }
+ 
++
++static void test_four_four_accent_does_not_lock_half_time() {
++    BeatTracker tracker;
++    tracker.configure(120.0, 48000, 1024);
++    BeatObservation out;
++    constexpr double featureRate = 48000.0 / 1024.0;
++    const float accents[4] = {1.0f, 0.05f, 0.20f, 0.05f};
++    int previousBeat = -1;
++    for (int n = 0; n < static_cast<int>(20 * featureRate); ++n) {
++        const int beat = static_cast<int>(std::floor(n * 120.0 / (60.0 * featureRate)));
++        float flux = static_cast<float>(n % 7) * 0.004f; // deterministic background flux
++        if (beat != previousBeat) {
++            previousBeat = beat;
++            flux += accents[beat & 3];
++        }
++        out = tracker.processFlux({flux, flux * 0.8f, flux * 0.5f},
++                                  flux > 0.1f ? 0.03f : 0.001f,
++                                  static_cast<int64_t>(n) * 1024);
++    }
++    CHECK_NEAR(out.detectedBpm, 120.0, 5.0);
++}
++
+ static void test_silence() {
+     const BeatObservation out = run(120, 120, 12, 1, 0.0f);
+     CHECK(!out.tempoValid); CHECK_NEAR(out.detectedBpm, 0.0, 0.01);
+@@ -86,6 +108,7 @@
+ REGISTER_TEST(test_eighths);
+ REGISTER_TEST(test_sixteenths);
+ REGISTER_TEST(test_tempo_change);
++REGISTER_TEST(test_four_four_accent_does_not_lock_half_time);
+ REGISTER_TEST(test_silence);
+ REGISTER_TEST(test_amplitude_variation);
+ REGISTER_TEST(test_delayed_lock_and_nonfinite_inputs);

@@ -1,0 +1,755 @@
+diff --git a/app/src/main/cpp/audio/OboeInputEngine.cpp b/app/src/main/cpp/audio/OboeInputEngine.cpp
+index bea8a80..af012e7 100644
+--- a/app/src/main/cpp/audio/OboeInputEngine.cpp
++++ b/app/src/main/cpp/audio/OboeInputEngine.cpp
+@@ -61,6 +61,28 @@ bool OboeInputEngine::start() {
+     return true;
+ }
+ 
++bool OboeInputEngine::startTest(int32_t sampleRate) {
++    stop();
++    if (sampleRate < 8000 || sampleRate > 192000) return false;
++
++    sampleRate_ = sampleRate;
++    channelCount_ = 1;
++    streamError_.store(false, std::memory_order_relaxed);
++    ring_.reset();
++    if (matcher_) matcher_->begin();
++    if (!analyzer_.start(sampleRate_, expectedBpm_)) return false;
++    transport_.setRunning(true);
++    return true;
++}
++
++void OboeInputEngine::pushTestAudio(const float* mono, size_t numFrames) noexcept {
++    if (mono == nullptr || numFrames == 0 || !transport_.snapshot().running) return;
++    // Test PCM is paced by AudioTrack on the Kotlin side. Advance the exact same
++    // transport clock and feed the exact same analyzer ring as the Oboe callback.
++    transport_.processFrames(static_cast<int32_t>(numFrames), sampleRate_);
++    ring_.write(mono, numFrames);
++}
++
+ void OboeInputEngine::stop() {
+     // Join the analyzer FIRST: no further submitPositionObservation can land
+     // after this, so the Idle state published below is the final one (gate-5 m8).
+diff --git a/app/src/main/cpp/audio/OboeInputEngine.h b/app/src/main/cpp/audio/OboeInputEngine.h
+index ee5fed3..3649248 100644
+--- a/app/src/main/cpp/audio/OboeInputEngine.h
++++ b/app/src/main/cpp/audio/OboeInputEngine.h
+@@ -16,6 +16,10 @@ class OboeInputEngine final : public oboe::AudioStreamDataCallback,
+ public:
+     void initialize(double expectedBpm, double startQuarterBeat) noexcept;
+     bool start();
++    // Deterministic test source: no microphone/Oboe stream. Decoded mono PCM
++    // is pushed from Android through pushTestAudio() at playback pace.
++    bool startTest(int32_t sampleRate);
++    void pushTestAudio(const float* mono, size_t numFrames) noexcept;
+     void stop();
+     void setExpectedBpm(double bpm) noexcept;
+     void resetPosition(double startQuarterBeat) noexcept;
+diff --git a/app/src/main/cpp/native_audio_jni.cpp b/app/src/main/cpp/native_audio_jni.cpp
+index d8e38c2..75338cb 100644
+--- a/app/src/main/cpp/native_audio_jni.cpp
++++ b/app/src/main/cpp/native_audio_jni.cpp
+@@ -19,6 +19,30 @@ Java_com_einhander_temposcore_NativeAudioBridge_start(JNIEnv*, jobject) {
+     return gEngine.start() ? JNI_TRUE : JNI_FALSE;
+ }
+ 
++
++extern "C" JNIEXPORT jboolean JNICALL
++Java_com_einhander_temposcore_NativeAudioBridge_startTest(
++        JNIEnv*, jobject, jint sampleRate) {
++    return gEngine.startTest(sampleRate) ? JNI_TRUE : JNI_FALSE;
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_com_einhander_temposcore_NativeAudioBridge_pushTestAudio(
++        JNIEnv* env, jobject, jfloatArray samples) {
++    if (samples == nullptr) return;
++    const jsize n = env->GetArrayLength(samples);
++    if (n <= 0) return;
++    jboolean isCopy = JNI_FALSE;
++    jfloat* data = env->GetFloatArrayElements(samples, &isCopy);
++    if (data == nullptr) return;
++    gEngine.pushTestAudio(data, static_cast<size_t>(n));
++    env->ReleaseFloatArrayElements(samples, data, JNI_ABORT);
++}
++
++extern "C" JNIEXPORT void JNICALL
++Java_com_einhander_temposcore_NativeAudioBridge_stopTest(JNIEnv*, jobject) {
++    gEngine.stop();
++}
+ extern "C" JNIEXPORT void JNICALL
+ Java_com_einhander_temposcore_NativeAudioBridge_stop(JNIEnv*, jobject) {
+     gEngine.stop();
+diff --git a/app/src/main/java/com/einhander/temposcore/MainActivity.kt b/app/src/main/java/com/einhander/temposcore/MainActivity.kt
+index 8c09ba2..3ed387f 100644
+--- a/app/src/main/java/com/einhander/temposcore/MainActivity.kt
++++ b/app/src/main/java/com/einhander/temposcore/MainActivity.kt
+@@ -10,6 +10,7 @@ import android.view.Choreographer
+ import android.view.View
+ import android.widget.AdapterView
+ import android.widget.ArrayAdapter
++import android.widget.SeekBar
+ import android.widget.Toast
+ import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.appcompat.app.AppCompatActivity
+@@ -26,7 +27,7 @@ import com.einhander.temposcore.transport.TransportSnapshot
+ import java.util.Locale
+ import kotlin.math.abs
+ 
+-class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
++class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener {
+     private lateinit var binding: ActivityMainBinding
+     private var score: MidiScore? = null
+     private var trackSelection: TrackSelection = TrackSelection.All
+@@ -35,11 +36,17 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+     private var expectedBpm = 120.0
+     private var nativeInitialized = false
+     private var frameLoopActive = false
++    private lateinit var testAudioPlayer: TestAudioPlayer
++    private var testSeekUserDragging = false
+ 
+     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+         if (uri != null) loadMidi(uri)
+     }
+ 
++    private val openTestAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
++        if (uri != null) loadTestAudio(uri)
++    }
++
+     private val requestMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+         if (granted) startListening() else Toast.makeText(
+             this,
+@@ -52,6 +59,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+         super.onCreate(savedInstanceState)
+         binding = ActivityMainBinding.inflate(layoutInflater)
+         setContentView(binding.root)
++        testAudioPlayer = TestAudioPlayer(this, this)
+ 
+         binding.loadMidiButton.setOnClickListener {
+             openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+@@ -70,6 +78,41 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+             NativeAudioBridge.requestGlobalReacquire()
+         }
+ 
++        binding.loadTestAudioButton.setOnClickListener {
++            openTestAudio.launch(arrayOf("audio/mpeg", "audio/mp3", "audio/*"))
++        }
++        binding.testPlayPauseButton.setOnClickListener {
++            if (score == null) {
++                Toast.makeText(this, "Load MIDI first", Toast.LENGTH_SHORT).show()
++                return@setOnClickListener
++            }
++            // startTest() stops an active Oboe stream, so test mode and microphone
++            // input can never feed the analyzer at the same time.
++            testAudioPlayer.togglePlayPause()
++        }
++        binding.testRestartButton.setOnClickListener {
++            if (score == null) return@setOnClickListener
++            testAudioPlayer.restart()
++        }
++        binding.testStopButton.setOnClickListener { testAudioPlayer.stop() }
++        binding.testSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
++            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
++                if (fromUser) {
++                    val duration = testAudioPlayer.durationMs
++                    val pos = if (duration > 0L) duration * progress / 1000L else 0L
++                    binding.testTimeText.text = "${formatTime(pos)} / ${formatTime(duration)}"
++                }
++            }
++            override fun onStartTrackingTouch(seekBar: SeekBar?) { testSeekUserDragging = true }
++            override fun onStopTrackingTouch(seekBar: SeekBar?) {
++                val duration = testAudioPlayer.durationMs
++                val progress = seekBar?.progress ?: 0
++                val pos = if (duration > 0L) duration * progress / 1000L else 0L
++                testSeekUserDragging = false
++                testAudioPlayer.seekTo(pos)
++            }
++        })
++
+         binding.trackSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+ 
+@@ -98,6 +141,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+     }
+ 
+     override fun onDestroy() {
++        testAudioPlayer.release()
+         if (nativeInitialized) NativeAudioBridge.stop()
+         super.onDestroy()
+     }
+@@ -117,6 +161,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+                 val parsed = MidiFileParser.parse(bytes)
+                 val name = displayName(uri) ?: "MIDI"
+                 runOnUiThread {
++                    testAudioPlayer.stop()
+                     if (nativeInitialized && NativeAudioBridge.state().running) {
+                         NativeAudioBridge.stop()
+                     }
+@@ -132,6 +177,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+                     binding.resetButton.isEnabled = true
+                     configureNativeEngine()
+                     sendScoreReferenceToNative(parsed)
++                    onTestAudioStateChanged(testAudioPlayer.state)
+                     updateUiFromTransport()
+                 }
+             } catch (t: Throwable) {
+@@ -200,6 +246,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+ 
+     private fun startListening() {
+         if (!nativeInitialized) return
++        if (testAudioPlayer.state == TestAudioPlayer.State.Playing ||
++            testAudioPlayer.state == TestAudioPlayer.State.Paused) {
++            testAudioPlayer.stop()
++        }
+         binding.listenButton.isEnabled = false
+         Thread {
+             val ok = NativeAudioBridge.start()
+@@ -253,7 +303,59 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
+         binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
+         binding.positionStatusText.text = formatPositionStatus(state)
+-        binding.listenButton.text = if (state.running) getString(R.string.stop_listening) else getString(R.string.start_listening)
++        val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
++            testAudioPlayer.state == TestAudioPlayer.State.Paused
++        binding.listenButton.isEnabled = !testActive
++        binding.listenButton.text = if (state.running && !testActive) {
++            getString(R.string.stop_listening)
++        } else {
++            getString(R.string.start_listening)
++        }
++    }
++
++    private fun loadTestAudio(uri: Uri) {
++        val name = displayName(uri) ?: "test audio"
++        testAudioPlayer.load(uri)
++        binding.testAudioNameText.text = name
++        binding.testPlayPauseButton.isEnabled = score != null
++        binding.testRestartButton.isEnabled = score != null
++        binding.testStopButton.isEnabled = false
++        binding.testSeekBar.isEnabled = true
++    }
++
++    override fun onTestAudioStateChanged(state: TestAudioPlayer.State) {
++        val hasAudio = state != TestAudioPlayer.State.Empty
++        val active = state == TestAudioPlayer.State.Playing || state == TestAudioPlayer.State.Paused
++        binding.testPlayPauseButton.isEnabled = hasAudio && score != null
++        binding.testRestartButton.isEnabled = hasAudio && score != null
++        binding.testStopButton.isEnabled = active
++        binding.testSeekBar.isEnabled = hasAudio
++        binding.testPlayPauseButton.text = when (state) {
++            TestAudioPlayer.State.Playing -> getString(R.string.test_pause)
++            else -> getString(R.string.test_play)
++        }
++        binding.listenButton.isEnabled = !active && score != null
++        if (state == TestAudioPlayer.State.Empty) {
++            binding.testAudioNameText.text = getString(R.string.no_test_audio)
++        }
++    }
++
++    override fun onTestAudioProgress(positionMs: Long, durationMs: Long) {
++        if (!testSeekUserDragging) {
++            binding.testTimeText.text = "${formatTime(positionMs)} / ${formatTime(durationMs)}"
++            binding.testSeekBar.progress = if (durationMs > 0L) {
++                ((positionMs.coerceIn(0L, durationMs) * 1000L) / durationMs).toInt()
++            } else 0
++        }
++    }
++
++    override fun onTestAudioError(message: String) {
++        Toast.makeText(this, "Test audio error: $message", Toast.LENGTH_LONG).show()
++    }
++
++    private fun formatTime(ms: Long): String {
++        val totalSeconds = (ms.coerceAtLeast(0L) / 1000L)
++        return String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
+     }
+ 
+     private fun formatPositionStatus(state: TransportSnapshot): String = when (state.positionState) {
+diff --git a/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt b/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
+index 69b208f..c51deeb 100644
+--- a/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
++++ b/app/src/main/java/com/einhander/temposcore/NativeAudioBridge.kt
+@@ -11,6 +11,9 @@ object NativeAudioBridge {
+ 
+     external fun initialize(expectedBpm: Double, startQuarterBeat: Double)
+     external fun start(): Boolean
++    external fun startTest(sampleRate: Int): Boolean
++    external fun pushTestAudio(samples: FloatArray)
++    external fun stopTest()
+     external fun stop()
+     external fun setExpectedBpm(bpm: Double)
+     external fun resetPosition(startQuarterBeat: Double)
+diff --git a/app/src/main/java/com/einhander/temposcore/TestAudioPlayer.kt b/app/src/main/java/com/einhander/temposcore/TestAudioPlayer.kt
+new file mode 100644
+index 0000000..5c3b959
+--- /dev/null
++++ b/app/src/main/java/com/einhander/temposcore/TestAudioPlayer.kt
+@@ -0,0 +1,370 @@
++package com.einhander.temposcore
++
++import android.content.Context
++import android.media.AudioAttributes
++import android.media.AudioFormat
++import android.media.AudioTrack
++import android.media.MediaCodec
++import android.media.MediaExtractor
++import android.media.MediaFormat
++import android.net.Uri
++import android.os.Handler
++import android.os.Looper
++import java.nio.ByteOrder
++import kotlin.math.max
++
++/**
++ * Deterministic score-following test source.
++ *
++ * The selected MP3 is decoded once by MediaCodec. The decoded PCM is both:
++ *  1) written to AudioTrack so the tester hears it, and
++ *  2) downmixed to mono and injected directly into the native analyzer.
++ *
++ * This intentionally bypasses the microphone, room acoustics, AGC and device
++ * input latency. AudioTrack's blocking writes provide the real-time pacing.
++ */
++class TestAudioPlayer(
++    private val context: Context,
++    private val listener: Listener,
++) {
++    interface Listener {
++        fun onTestAudioStateChanged(state: State)
++        fun onTestAudioProgress(positionMs: Long, durationMs: Long)
++        fun onTestAudioError(message: String)
++    }
++
++    enum class State { Empty, Ready, Playing, Paused }
++
++    @Volatile var state: State = State.Empty
++        private set
++    @Volatile var durationMs: Long = 0L
++        private set
++    @Volatile var positionMs: Long = 0L
++        private set
++
++    private val mainHandler = Handler(Looper.getMainLooper())
++    private val pauseLock = Object()
++    @Volatile private var sourceUri: Uri? = null
++    @Volatile private var stopRequested = false
++    @Volatile private var paused = false
++    @Volatile private var playbackThread: Thread? = null
++    @Volatile private var audioTrack: AudioTrack? = null
++    @Volatile private var nextStartUs = 0L
++
++    fun load(uri: Uri) {
++        stopSession(keepReady = false)
++        sourceUri = uri
++        nextStartUs = 0L
++        positionMs = 0L
++        durationMs = probeDuration(uri) / 1000L
++        publishState(State.Ready)
++        publishProgress()
++    }
++
++    fun togglePlayPause() {
++        when (state) {
++            State.Empty -> Unit
++            State.Ready -> startSession(nextStartUs)
++            State.Playing -> pause()
++            State.Paused -> resume()
++        }
++    }
++
++    fun restart() {
++        if (sourceUri == null) return
++        stopSession(keepReady = true)
++        nextStartUs = 0L
++        positionMs = 0L
++        publishProgress()
++        startSession(0L)
++    }
++
++    /** Seek is deliberately a fresh global-acquisition test, not a hidden score hint. */
++    fun seekTo(positionMs: Long) {
++        if (sourceUri == null) return
++        val targetMs = positionMs.coerceIn(0L, max(0L, durationMs))
++        val wasPlaying = state == State.Playing
++        stopSession(keepReady = true)
++        nextStartUs = targetMs * 1000L
++        this.positionMs = targetMs
++        publishProgress()
++        if (wasPlaying) startSession(nextStartUs)
++    }
++
++    fun stop() {
++        stopSession(keepReady = sourceUri != null)
++        nextStartUs = 0L
++        positionMs = 0L
++        publishProgress()
++    }
++
++    fun release() {
++        stopSession(keepReady = false)
++        sourceUri = null
++        publishState(State.Empty)
++    }
++
++    private fun pause() {
++        if (state != State.Playing) return
++        paused = true
++        try { audioTrack?.pause() } catch (_: IllegalStateException) { }
++        publishState(State.Paused)
++    }
++
++    private fun resume() {
++        if (state != State.Paused) return
++        paused = false
++        try { audioTrack?.play() } catch (_: IllegalStateException) { }
++        synchronized(pauseLock) { pauseLock.notifyAll() }
++        publishState(State.Playing)
++    }
++
++    private fun startSession(startUs: Long) {
++        val uri = sourceUri ?: return
++        if (playbackThread?.isAlive == true) return
++        stopRequested = false
++        paused = false
++        val thread = Thread({ decodeAndPlay(uri, startUs) }, "scoretracker-test-audio")
++        playbackThread = thread
++        publishState(State.Playing)
++        thread.start()
++    }
++
++    private fun stopSession(keepReady: Boolean) {
++        val thread = playbackThread
++        if (thread != null && thread.isAlive) {
++            stopRequested = true
++            paused = false
++            synchronized(pauseLock) { pauseLock.notifyAll() }
++            try { audioTrack?.pause() } catch (_: IllegalStateException) { }
++            try { audioTrack?.flush() } catch (_: IllegalStateException) { }
++            thread.interrupt()
++            try { thread.join(1500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
++        }
++        playbackThread = null
++        audioTrack = null
++        stopRequested = false
++        paused = false
++        if (keepReady && sourceUri != null) publishState(State.Ready)
++    }
++
++    private fun decodeAndPlay(uri: Uri, startUs: Long) {
++        var extractor: MediaExtractor? = null
++        var codec: MediaCodec? = null
++        var track: AudioTrack? = null
++        var nativeStarted = false
++        try {
++            val ex = MediaExtractor()
++            extractor = ex
++            ex.setDataSource(context, uri, null)
++            val trackIndex = findAudioTrack(ex)
++            if (trackIndex < 0) error("No audio track in selected file")
++            ex.selectTrack(trackIndex)
++            val inputFormat = ex.getTrackFormat(trackIndex)
++            val mime = inputFormat.getString(MediaFormat.KEY_MIME) ?: error("Audio MIME is missing")
++            durationMs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
++                inputFormat.getLong(MediaFormat.KEY_DURATION) / 1000L
++            } else durationMs
++            if (startUs > 0L) ex.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
++
++            val decoder = MediaCodec.createDecoderByType(mime)
++            codec = decoder
++            decoder.configure(inputFormat, null, null, 0)
++            decoder.start()
++
++            val info = MediaCodec.BufferInfo()
++            var inputEos = false
++            var outputEos = false
++            var outputChannels = 0
++            var outputSampleRate = 0
++            var outputEncoding = AudioFormat.ENCODING_PCM_16BIT
++
++            while (!outputEos && !stopRequested) {
++                waitWhilePaused()
++                if (stopRequested) break
++
++                if (!inputEos) {
++                    val inputIndex = decoder.dequeueInputBuffer(10_000L)
++                    if (inputIndex >= 0) {
++                        val input = decoder.getInputBuffer(inputIndex) ?: error("Decoder input buffer unavailable")
++                        val size = ex.readSampleData(input, 0)
++                        if (size < 0) {
++                            decoder.queueInputBuffer(inputIndex, 0, 0, 0L, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
++                            inputEos = true
++                        } else {
++                            decoder.queueInputBuffer(inputIndex, 0, size, ex.sampleTime, 0)
++                            ex.advance()
++                        }
++                    }
++                }
++
++                when (val outputIndex = decoder.dequeueOutputBuffer(info, 10_000L)) {
++                    MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
++                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
++                        val f = decoder.outputFormat
++                        outputChannels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
++                        outputSampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
++                        outputEncoding = if (f.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
++                            f.getInteger(MediaFormat.KEY_PCM_ENCODING)
++                        } else AudioFormat.ENCODING_PCM_16BIT
++                        if (outputEncoding != AudioFormat.ENCODING_PCM_16BIT) {
++                            error("Test mode expects 16-bit PCM from the MP3 decoder (got $outputEncoding)")
++                        }
++                        val newTrack = createAudioTrack(outputSampleRate, outputChannels, outputEncoding)
++                        track = newTrack
++                        audioTrack = newTrack
++                        if (!NativeAudioBridge.startTest(outputSampleRate)) {
++                            error("Could not start native test analyzer")
++                        }
++                        nativeStarted = true
++                        // A seek/restart must prove its absolute position again. Do not
++                        // seed the matcher with the MP3 timestamp (that would hide bugs).
++                        NativeAudioBridge.resetPosition(0.0)
++                        NativeAudioBridge.requestGlobalReacquire()
++                        newTrack.play()
++                    }
++                    else -> if (outputIndex >= 0) {
++                        if (info.size > 0) {
++                            val out = decoder.getOutputBuffer(outputIndex) ?: error("Decoder output buffer unavailable")
++                            out.position(info.offset)
++                            out.limit(info.offset + info.size)
++                            val pcm = ByteArray(info.size)
++                            out.get(pcm)
++                            val outputTrack = track ?: error("Decoder produced PCM before output format")
++                            if (outputChannels <= 0 || outputSampleRate <= 0) {
++                                error("Invalid decoder output format")
++                            }
++                            waitWhilePaused()
++                            if (!stopRequested) {
++                                // Blocking write is the clock for the test source: decoding is
++                                // prevented from running through the entire MP3 at CPU speed.
++                                writeAll(outputTrack, pcm)
++                                NativeAudioBridge.pushTestAudio(
++                                    downmixToMono(pcm, outputChannels, outputEncoding),
++                                )
++                                positionMs = info.presentationTimeUs / 1000L
++                                publishProgress()
++                            }
++                        }
++                        outputEos = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
++                        decoder.releaseOutputBuffer(outputIndex, false)
++                    }
++                }
++            }
++        } catch (t: Throwable) {
++            if (!stopRequested) {
++                mainHandler.post { listener.onTestAudioError(t.message ?: t.javaClass.simpleName) }
++            }
++        } finally {
++            if (nativeStarted) NativeAudioBridge.stopTest()
++            try { track?.pause() } catch (_: Throwable) { }
++            try { track?.flush() } catch (_: Throwable) { }
++            try { track?.release() } catch (_: Throwable) { }
++            audioTrack = null
++            try { codec?.stop() } catch (_: Throwable) { }
++            try { codec?.release() } catch (_: Throwable) { }
++            try { extractor?.release() } catch (_: Throwable) { }
++            if (playbackThread === Thread.currentThread()) playbackThread = null
++            if (!stopRequested) {
++                nextStartUs = 0L
++                publishState(if (sourceUri != null) State.Ready else State.Empty)
++            }
++        }
++    }
++
++    private fun waitWhilePaused() {
++        synchronized(pauseLock) {
++            while (paused && !stopRequested) {
++                try { pauseLock.wait(250L) } catch (_: InterruptedException) {
++                    if (stopRequested) return
++                }
++            }
++        }
++    }
++
++    private fun createAudioTrack(sampleRate: Int, channels: Int, encoding: Int): AudioTrack {
++        val channelMask = when (channels) {
++            1 -> AudioFormat.CHANNEL_OUT_MONO
++            2 -> AudioFormat.CHANNEL_OUT_STEREO
++            else -> error("Only mono/stereo test audio is supported (got $channels channels)")
++        }
++        val bytesPerSample = 2
++        val minimum = AudioTrack.getMinBufferSize(sampleRate, channelMask, encoding)
++        val bufferBytes = max(minimum, sampleRate * channels * bytesPerSample / 10)
++        return AudioTrack.Builder()
++            .setAudioAttributes(
++                AudioAttributes.Builder()
++                    .setUsage(AudioAttributes.USAGE_MEDIA)
++                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
++                    .build(),
++            )
++            .setAudioFormat(
++                AudioFormat.Builder()
++                    .setEncoding(encoding)
++                    .setSampleRate(sampleRate)
++                    .setChannelMask(channelMask)
++                    .build(),
++            )
++            .setBufferSizeInBytes(bufferBytes)
++            .setTransferMode(AudioTrack.MODE_STREAM)
++            .build()
++    }
++
++    private fun writeAll(track: AudioTrack, pcm: ByteArray) {
++        var offset = 0
++        while (offset < pcm.size && !stopRequested) {
++            waitWhilePaused()
++            val written = track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
++            if (written < 0) error("AudioTrack write failed: $written")
++            if (written == 0) continue
++            offset += written
++        }
++    }
++
++    private fun downmixToMono(pcm: ByteArray, channels: Int, encoding: Int): FloatArray {
++        if (encoding != AudioFormat.ENCODING_PCM_16BIT) return FloatArray(0)
++        val shorts = pcm.size / 2
++        val frames = shorts / channels
++        val sb = java.nio.ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
++        return FloatArray(frames) { frame ->
++            var sum = 0f
++            repeat(channels) { sum += sb.get(frame * channels + it) / 32768f }
++            sum / channels
++        }
++    }
++
++    private fun findAudioTrack(extractor: MediaExtractor): Int {
++        for (i in 0 until extractor.trackCount) {
++            val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)
++            if (mime?.startsWith("audio/") == true) return i
++        }
++        return -1
++    }
++
++    private fun probeDuration(uri: Uri): Long {
++        val extractor = MediaExtractor()
++        return try {
++            extractor.setDataSource(context, uri, null)
++            val i = findAudioTrack(extractor)
++            if (i < 0) 0L else {
++                val f = extractor.getTrackFormat(i)
++                if (f.containsKey(MediaFormat.KEY_DURATION)) f.getLong(MediaFormat.KEY_DURATION) else 0L
++            }
++        } catch (_: Throwable) {
++            0L
++        } finally {
++            extractor.release()
++        }
++    }
++
++    private fun publishState(newState: State) {
++        state = newState
++        mainHandler.post { listener.onTestAudioStateChanged(newState) }
++    }
++
++    private fun publishProgress() {
++        val p = positionMs
++        val d = durationMs
++        mainHandler.post { listener.onTestAudioProgress(p, d) }
++    }
++}
+diff --git a/app/src/main/res/layout/activity_main.xml b/app/src/main/res/layout/activity_main.xml
+index 87e36b1..ae1361f 100644
+--- a/app/src/main/res/layout/activity_main.xml
++++ b/app/src/main/res/layout/activity_main.xml
+@@ -46,6 +46,76 @@
+             android:textStyle="bold" />
+     </LinearLayout>
+ 
++    <LinearLayout
++        android:id="@+id/testControlsRow"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:layout_marginTop="8dp"
++        android:gravity="center_vertical"
++        android:orientation="horizontal">
++
++        <TextView
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginEnd="8dp"
++            android:text="@string/test_mode"
++            android:textStyle="bold" />
++
++        <Button
++            android:id="@+id/loadTestAudioButton"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:text="@string/load_test_audio" />
++
++        <Button
++            android:id="@+id/testPlayPauseButton"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="4dp"
++            android:enabled="false"
++            android:text="@string/test_play" />
++
++        <Button
++            android:id="@+id/testRestartButton"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="4dp"
++            android:enabled="false"
++            android:text="@string/test_restart" />
++
++        <Button
++            android:id="@+id/testStopButton"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="4dp"
++            android:enabled="false"
++            android:text="@string/test_stop" />
++
++        <TextView
++            android:id="@+id/testAudioNameText"
++            android:layout_width="0dp"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="8dp"
++            android:layout_weight="1"
++            android:ellipsize="middle"
++            android:maxLines="1"
++            android:text="@string/no_test_audio" />
++
++        <TextView
++            android:id="@+id/testTimeText"
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginStart="8dp"
++            android:text="0:00 / 0:00" />
++    </LinearLayout>
++
++    <SeekBar
++        android:id="@+id/testSeekBar"
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:enabled="false"
++        android:max="1000" />
++
+     <LinearLayout
+         android:id="@+id/trackSelectorRow"
+         android:layout_width="match_parent"
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index a1e30db..3cc2eb2 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -8,4 +8,11 @@
+     <string name="permission_required">Microphone permission is required for tempo tracking.</string>
+     <string name="track_label">Track</string>
+     <string name="all_tracks">All tracks</string>
++    <string name="test_mode">Test MP3</string>
++    <string name="load_test_audio">Load MP3</string>
++    <string name="test_play">Play</string>
++    <string name="test_pause">Pause</string>
++    <string name="test_restart">Restart</string>
++    <string name="test_stop">Stop</string>
++    <string name="no_test_audio">No test audio</string>
+ </resources>
