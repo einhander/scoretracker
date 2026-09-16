@@ -23,6 +23,7 @@ public:
     void stop();
     void setExpectedBpm(double bpm) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
+    void setManualPosition(double startQuarterBeat) noexcept;
     // Build the score reference from the parsed MIDI and (re)create the
     // PositionMatcher. Called on the main thread (JNI) BEFORE start().
     void setScoreReference(const MidiData& data) noexcept;

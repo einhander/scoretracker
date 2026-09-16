@@ -109,6 +109,11 @@ void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
     transport_.resetPosition(startQuarterBeat);
 }
 
+void OboeInputEngine::setManualPosition(double startQuarterBeat) noexcept {
+    transport_.resetPosition(startQuarterBeat);
+    if (matcher_) matcher_->requestLocalReacquire();
+}
+
 void OboeInputEngine::setScoreReference(const MidiData& data) noexcept {
     buildScoreReference(data, reference_);
     matcher_.reset(new PositionMatcher(reference_));

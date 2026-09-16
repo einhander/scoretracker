@@ -64,23 +64,25 @@ object ScoreNavigator {
         )
     }
 
-    fun pitchName(pitch: Int): String {
-        val names = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+    fun pitchName(pitch: Int, naming: NoteNaming = NoteNaming.Letters): String {
+        val letterNames = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+        val solfegeNames = arrayOf("До", "До♯", "Ре", "Ре♯", "Ми", "Фа", "Фа♯", "Соль", "Соль♯", "Ля", "Ля♯", "Си")
         val p = pitch.coerceIn(0, 127)
+        val names = if (naming == NoteNaming.Solfege) solfegeNames else letterNames
         return names[p % 12] + (p / 12 - 1)
     }
 
-    fun trackLabel(track: MidiTrackInfo): String {
+    fun trackLabel(track: MidiTrackInfo, naming: NoteNaming = NoteNaming.Letters): String {
         var label = "Track ${track.index + 1}"
         if (!track.name.isNullOrBlank()) label += " — ${track.name}"
         label += if (track.pitchMin != null && track.pitchMax != null) {
-            " • ${track.noteCount} notes, ${pitchName(track.pitchMin)}–${pitchName(track.pitchMax)}"
+            " • ${track.noteCount} notes, ${pitchName(track.pitchMin, naming)}–${pitchName(track.pitchMax, naming)}"
         } else " • no notes"
         return label
     }
 
-    fun noteList(notes: List<MidiNote>): String =
-        if (notes.isEmpty()) "—" else notes.joinToString(" ") { pitchName(it.pitch) }
+    fun noteList(notes: List<MidiNote>, naming: NoteNaming = NoteNaming.Letters): String =
+        if (notes.isEmpty()) "—" else notes.joinToString(" ") { pitchName(it.pitch, naming) }
 
     // --- Tempo map (spec §26) -------------------------------------------------
 

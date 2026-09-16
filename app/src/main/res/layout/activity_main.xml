@@ -33,6 +33,13 @@
             android:enabled="false"
             android:text="@string/reset_position" />
 
+        <Button
+            android:id="@+id/settingsButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="@string/settings" />
+
         <TextView
             android:id="@+id/fileNameText"
             android:layout_width="0dp"
@@ -47,12 +54,19 @@
     </LinearLayout>
 
     <LinearLayout
-        android:id="@+id/testControlsRow"
+        android:id="@+id/testControlsContainer"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/testControlsRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
         <TextView
             android:layout_width="wrap_content"
@@ -107,14 +121,15 @@
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
             android:text="0:00 / 0:00" />
-    </LinearLayout>
+        </LinearLayout>
 
-    <SeekBar
-        android:id="@+id/testSeekBar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:enabled="false"
-        android:max="1000" />
+        <SeekBar
+            android:id="@+id/testSeekBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:enabled="false"
+            android:max="1000" />
+    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/trackSelectorRow"

@@ -10,6 +10,7 @@ import android.view.Choreographer
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.PopupMenu
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -19,6 +20,7 @@ import com.einhander.temposcore.databinding.ActivityMainBinding
 import com.einhander.temposcore.midi.MidiFileParser
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
+import com.einhander.temposcore.score.NoteNaming
 import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
@@ -38,6 +40,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var frameLoopActive = false
     private lateinit var testAudioPlayer: TestAudioPlayer
     private var testSeekUserDragging = false
+    private var noteNaming = NoteNaming.Letters
+    private var showTestMode = false
+    private var scoreScrubActive = false
+    private var scoreScrubPosition = 0.0
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
@@ -60,6 +66,30 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         testAudioPlayer = TestAudioPlayer(this, this)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        noteNaming = when (prefs.getString(KEY_NOTE_NAMING, NoteNaming.Letters.name)) {
+            NoteNaming.Solfege.name -> NoteNaming.Solfege
+            else -> NoteNaming.Letters
+        }
+        showTestMode = prefs.getBoolean(KEY_SHOW_TEST_MODE, false)
+        applyTestModeVisibility()
+
+        binding.settingsButton.setOnClickListener { showSettingsMenu() }
+
+        binding.scoreView.onPositionScrubStart = { position ->
+            scoreScrubActive = true
+            scoreScrubPosition = position
+        }
+        binding.scoreView.onPositionScrubChanged = { position ->
+            scoreScrubPosition = position
+            updateUiFromTransport()
+        }
+        binding.scoreView.onPositionScrubFinished = { position ->
+            scoreScrubPosition = position
+            scoreScrubActive = false
+            if (nativeInitialized) NativeAudioBridge.setManualPosition(position)
+            updateUiFromTransport()
+        }
 
         binding.loadMidiButton.setOnClickListener {
             openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
@@ -166,8 +196,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                         NativeAudioBridge.stop()
                     }
                     score = parsed
-                    trackSelection = TrackSelection.All
-                    visibleNotes = parsed.notes
+                    val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
+                    trackSelection = if (defaultTrack != null) TrackSelection.Track(defaultTrack) else TrackSelection.All
+                    visibleNotes = parsed.visibleNotes(trackSelection)
                     binding.scoreView.trackSelection = trackSelection
                     populateTrackSelector(parsed)
                     expectedBpm = parsed.initialBpm
@@ -192,7 +223,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun populateTrackSelector(score: MidiScore) {
         if (score.tracks.size > 1) {
-            val items = listOf(getString(R.string.all_tracks)) + score.tracks.map { ScoreNavigator.trackLabel(it) }
+            val items = listOf(getString(R.string.all_tracks)) +
+                score.tracks.map { ScoreNavigator.trackLabel(it, noteNaming) }
             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
                 setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             }
@@ -201,10 +233,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             // selection index is out of range of the new adapter.
             spinnerPopulating = true
             binding.trackSpinner.adapter = adapter
-            binding.trackSpinner.setSelection(0)
+            val selection = when (val selected = trackSelection) {
+                TrackSelection.All -> 0
+                is TrackSelection.Track -> (selected.index + 1).coerceIn(1, items.lastIndex)
+            }
+            binding.trackSpinner.setSelection(selection, false)
             spinnerPopulating = false
             binding.trackSelectorRow.visibility = View.VISIBLE
         } else {
+            // A single-track MIDI still defaults to that track rather than All.
+            trackSelection = TrackSelection.Track(0)
+            visibleNotes = score.visibleNotes(trackSelection)
+            binding.scoreView.trackSelection = trackSelection
             binding.trackSpinner.adapter = null
             binding.trackSelectorRow.visibility = View.GONE
         }
@@ -269,7 +309,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private fun updateUiFromTransport() {
         val localScore = score ?: return
         val state = if (nativeInitialized) NativeAudioBridge.state() else return
-        val pos = state.quarterBeatPosition.coerceAtLeast(0.0)
+        val pos = if (scoreScrubActive) scoreScrubPosition else state.quarterBeatPosition.coerceAtLeast(0.0)
         val barBeat = ScoreNavigator.barBeatAt(localScore, pos)
         val now = ScoreNavigator.soundingNotes(localScore, visibleNotes, pos)
         val next = ScoreNavigator.nextNotes(localScore, visibleNotes, pos)
@@ -277,7 +317,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         // Tempo map (spec §26): update the native expected BPM only when the
         // transport crosses a tempo region — not on every frame.
         val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, pos)
-        if (abs(regionBpm - expectedBpm) > 0.5) {
+        if (!scoreScrubActive && abs(regionBpm - expectedBpm) > 0.5) {
             expectedBpm = regionBpm
             if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm)
         }
@@ -298,8 +338,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             barBeat.numerator,
             barBeat.denominator,
         )
-        binding.nowText.text = "Now: ${ScoreNavigator.noteList(now)}"
-        binding.nextText.text = "Next: ${ScoreNavigator.noteList(next)}"
+        binding.nowText.text = "Now: ${ScoreNavigator.noteList(now, noteNaming)}"
+        binding.nextText.text = "Next: ${ScoreNavigator.noteList(next, noteNaming)}"
         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
         binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
         binding.positionStatusText.text = formatPositionStatus(state)
@@ -311,6 +351,48 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         } else {
             getString(R.string.start_listening)
         }
+    }
+
+    private fun showSettingsMenu() {
+        val popup = PopupMenu(this, binding.settingsButton)
+        val letters = popup.menu.add(1, MENU_NOTATION_LETTERS, 0, getString(R.string.notation_letters))
+        val solfege = popup.menu.add(1, MENU_NOTATION_SOLFEGE, 1, getString(R.string.notation_solfege))
+        popup.menu.setGroupCheckable(1, true, true)
+        letters.isChecked = noteNaming == NoteNaming.Letters
+        solfege.isChecked = noteNaming == NoteNaming.Solfege
+        popup.menu.add(2, MENU_SHOW_TEST_MODE, 2, getString(R.string.show_test_mode)).apply {
+            isCheckable = true
+            isChecked = showTestMode
+        }
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
+                MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
+                MENU_SHOW_TEST_MODE -> {
+                    showTestMode = !showTestMode
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
+                    if (!showTestMode) testAudioPlayer.stop()
+                    applyTestModeVisibility()
+                    true
+                }
+                else -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun setNoteNaming(value: NoteNaming) {
+        if (noteNaming == value) return
+        noteNaming = value
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_NOTE_NAMING, value.name).apply()
+        score?.let { populateTrackSelector(it) }
+        updateUiFromTransport()
+    }
+
+    private fun applyTestModeVisibility() {
+        binding.testControlsContainer.visibility = if (showTestMode) View.VISIBLE else View.GONE
     }
 
     private fun loadTestAudio(uri: Uri) {
@@ -378,4 +460,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             cursor?.close()
         }
     }
+    companion object {
+        private const val PREFS_NAME = "temposcore_settings"
+        private const val KEY_NOTE_NAMING = "note_naming"
+        private const val KEY_SHOW_TEST_MODE = "show_test_mode"
+        private const val MENU_NOTATION_LETTERS = 1
+        private const val MENU_NOTATION_SOLFEGE = 2
+        private const val MENU_SHOW_TEST_MODE = 3
+    }
+
 }

@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.view.View
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.TrackSelection
@@ -62,6 +63,53 @@ class ScoreStaffView @JvmOverloads constructor(
             invalidate()
         }
 
+    var onPositionScrubStart: ((Double) -> Unit)? = null
+    var onPositionScrubChanged: ((Double) -> Unit)? = null
+    var onPositionScrubFinished: ((Double) -> Unit)? = null
+
+    private var scrubbing = false
+    private var scrubStartX = 0f
+    private var scrubStartPosition = 0.0
+
+    private fun pixelsPerQuarterBeat(): Float = max(52f, width.toFloat() / 10f)
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val localScore = score ?: return false
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                scrubbing = true
+                scrubStartX = event.x
+                scrubStartPosition = quarterBeatPosition
+                parent?.requestDisallowInterceptTouchEvent(true)
+                onPositionScrubStart?.invoke(scrubStartPosition)
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!scrubbing) return false
+                val deltaBeats = (event.x - scrubStartX) / pixelsPerQuarterBeat()
+                val maxBeat = localScore.tickToQuarterBeats(localScore.totalTicks)
+                val newPosition = (scrubStartPosition - deltaBeats).coerceIn(0.0, maxBeat)
+                quarterBeatPosition = newPosition
+                onPositionScrubChanged?.invoke(newPosition)
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (!scrubbing) return false
+                scrubbing = false
+                parent?.requestDisallowInterceptTouchEvent(false)
+                onPositionScrubFinished?.invoke(quarterBeatPosition)
+                if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
+        return true
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         val w = width.toFloat()
@@ -84,7 +132,7 @@ class ScoreStaffView @JvmOverloads constructor(
             return
         }
 
-        val pixelsPerQuarterBeat = max(52f, w / 10f)
+        val pixelsPerQuarterBeat = pixelsPerQuarterBeat()
         val pastWindow = 2.5
         val futureWindow = 8.0
         val minBeat = quarterBeatPosition - pastWindow

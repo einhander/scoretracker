@@ -15,4 +15,8 @@
     <string name="test_restart">Restart</string>
     <string name="test_stop">Stop</string>
     <string name="no_test_audio">No test audio</string>
+    <string name="settings">Settings</string>
+    <string name="notation_letters">Notation: A B C</string>
+    <string name="notation_solfege">Notation: До Ре Ми</string>
+    <string name="show_test_mode">Show test mode</string>
 </resources>

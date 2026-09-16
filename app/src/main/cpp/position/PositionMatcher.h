@@ -19,7 +19,16 @@ public:
     }
     // Request a global re-acquisition from the main thread (JNI). The analyzer
     // thread applies it on its next update() (no cross-thread state write).
-    void requestReacquire() noexcept { reacquireRequested_.store(true, std::memory_order_release); }
+    void requestReacquire() noexcept {
+        localReacquireRequested_.store(false, std::memory_order_release);
+        reacquireRequested_.store(true, std::memory_order_release);
+    }
+    // Manual score scrub: trust the user-selected neighbourhood and resume with
+    // local DTW instead of immediately performing a global section search.
+    void requestLocalReacquire() noexcept {
+        reacquireRequested_.store(false, std::memory_order_release);
+        localReacquireRequested_.store(true, std::memory_order_release);
+    }
     PositionObservation update(const FeatureRing& f, double predicted = 0.0) noexcept;
     PositionTrackingState state() const noexcept { return state_; }
 private:
@@ -36,6 +45,7 @@ private:
 
     DtwMatcher dtw_;
     std::atomic<bool> reacquireRequested_{false}; // main thread -> analyzer thread
+    std::atomic<bool> localReacquireRequested_{false};
     PositionTrackingState state_ = PositionTrackingState::Idle;
     int stable_ = 0;       // consecutive agreeing observations (initial-lock stability)
     int weakStreak_ = 0;   // consecutive weak observations (hysteresis before Reacquiring)

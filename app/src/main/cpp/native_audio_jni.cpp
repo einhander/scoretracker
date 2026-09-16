@@ -61,6 +61,12 @@ Java_com_einhander_temposcore_NativeAudioBridge_resetPosition(
 }
 
 extern "C" JNIEXPORT void JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_setManualPosition(
+        JNIEnv*, jobject, jdouble startQuarterBeat) {
+    gEngine.setManualPosition(startQuarterBeat);
+}
+
+extern "C" JNIEXPORT void JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_requestGlobalReacquire(JNIEnv*, jobject) {
     gEngine.requestGlobalReacquire();
 }
