@@ -26,8 +26,11 @@ void DtwMatcher::coarseTopK(const FeatureRing& l, size_t stepFrames,
     const auto& ref = reference_.frames();
     if (ref.empty() || stepFrames == 0) return;
     struct Cand { float score; size_t start; };
-    std::array<Cand, 8> top{};
-    size_t topN = 0;
+    // Keep a larger raw pool first.  Without this, top-8 is often eight nearby
+    // timestamps from ONE chorus/bar and a genuinely repeated section never
+    // reaches the fine matcher, making ambiguity look artificially high.
+    std::array<Cand, 64> raw{};
+    size_t rawN = 0;
     for (size_t s = 0; s < ref.size(); s += stepFrames) {
         float sum = 0.0f;
         int cnt = 0;
@@ -46,16 +49,28 @@ void DtwMatcher::coarseTopK(const FeatureRing& l, size_t stepFrames,
         }
         if (cnt < static_cast<int>(n / 2)) continue;
         const float score = sum / static_cast<float>(cnt);
-        if (topN < 8) {
-            top[topN++] = {score, s};
-            for (size_t k = topN; k > 1 && top[k - 1].score > top[k - 2].score; --k) std::swap(top[k - 1], top[k - 2]);
-        } else if (score > top[7].score) {
-            top[7] = {score, s};
-            for (size_t k = 7; k > 0 && top[k].score > top[k - 1].score; --k) std::swap(top[k], top[k - 1]);
+        if (rawN < raw.size()) {
+            raw[rawN++] = {score, s};
+            for (size_t k = rawN; k > 1 && raw[k - 1].score > raw[k - 2].score; --k)
+                std::swap(raw[k - 1], raw[k - 2]);
+        } else if (score > raw.back().score) {
+            raw.back() = {score, s};
+            for (size_t k = raw.size() - 1; k > 0 && raw[k].score > raw[k - 1].score; --k)
+                std::swap(raw[k], raw[k - 1]);
         }
     }
-    for (size_t i = 0; i < topN; ++i) out[i] = top[i].start;
-    outCount = topN;
+    // Non-maximum suppression in time: each coarse candidate should represent
+    // a different musical neighbourhood, not a shifted alignment of the same
+    // live window.  Use ~80% of the current context (capped at 8 s).
+    const size_t kMinCandidateSeparationFrames = std::max<size_t>(20, std::min<size_t>(80, n * 4 / 5));
+    for (size_t i = 0; i < rawN && outCount < out.size(); ++i) {
+        bool nearExisting = false;
+        for (size_t j = 0; j < outCount; ++j) {
+            const size_t d = raw[i].start > out[j] ? raw[i].start - out[j] : out[j] - raw[i].start;
+            if (d < kMinCandidateSeparationFrames) { nearExisting = true; break; }
+        }
+        if (!nearExisting) out[outCount++] = raw[i].start;
+    }
 }
 PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, bool localSearch,
                                       double radiusSec, const size_t* startList, size_t startCount) noexcept {
@@ -71,13 +86,33 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
     struct Cand { float cost; size_t s; size_t current; };
     std::array<Cand, 16> top{};
     size_t topN = 0;
+    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
+    const double hypothesisSeparationSeconds = std::max(2.0, std::min(8.0, 0.8 * liveSpanSeconds));
     auto consider = [&](float cost, size_t s, size_t current) {
+        // Collapse neighbouring alignments of the same physical match.  The
+        // retained alternatives must be genuinely different score locations;
+        // otherwise a repeated bar/chorus can disappear from second-best.
+        for (size_t i = 0; i < topN; ++i) {
+            if (std::abs(ref[top[i].current].nominalSeconds - ref[current].nominalSeconds)
+                    < hypothesisSeparationSeconds) {
+                if (cost < top[i].cost) {
+                    top[i] = {cost, s, current};
+                    while (i > 0 && top[i].cost < top[i - 1].cost) {
+                        std::swap(top[i], top[i - 1]);
+                        --i;
+                    }
+                }
+                return;
+            }
+        }
         if (topN < 16) {
             top[topN++] = {cost, s, current};
-            for (size_t k = topN; k > 1 && top[k - 1].cost < top[k - 2].cost; --k) std::swap(top[k - 1], top[k - 2]);
+            for (size_t k = topN; k > 1 && top[k - 1].cost < top[k - 2].cost; --k)
+                std::swap(top[k - 1], top[k - 2]);
         } else if (cost < top[15].cost) {
             top[15] = {cost, s, current};
-            for (size_t k = 15; k > 0 && top[k].cost < top[k - 1].cost; --k) std::swap(top[k], top[k - 1]);
+            for (size_t k = 15; k > 0 && top[k].cost < top[k - 1].cost; --k)
+                std::swap(top[k], top[k - 1]);
         }
     };
 
@@ -98,8 +133,6 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
                 ? it->nominalSeconds : prev->nominalSeconds;
         }
     }
-    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
-
     const size_t nCand = (startList != nullptr) ? startCount : ref.size();
     for (size_t ci = 0; ci < nCand; ++ci) {
         const size_t s = (startList != nullptr) ? startList[ci] : ci;
@@ -112,11 +145,11 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
             const double prefilterRadius = radiusSec + 0.55 * liveSpanSeconds;
             if (std::abs(approxEndSeconds - predictedSeconds) > prefilterRadius) continue;
         }
-        if (ref.size() - s <= ((n - 1) * 65 / 100)) continue;
+        if (ref.size() - s <= ((n - 1) * 78 / 100)) continue;
         dp_[0] = frameDistance(live_[0], ref[s]);
         for (size_t i = 1; i < n; ++i) {
-            const size_t lo = i * 65 / 100, hi = std::min({i * 150 / 100, ref.size() - s - 1, MaxBand - 1});
-            const size_t loPrev = (i - 1) * 65 / 100, hiPrev = std::min({(i - 1) * 150 / 100, ref.size() - s - 1, MaxBand - 1});
+            const size_t lo = i * 78 / 100, hi = std::min({i * 130 / 100, ref.size() - s - 1, MaxBand - 1});
+            const size_t loPrev = (i - 1) * 78 / 100, hiPrev = std::min({(i - 1) * 130 / 100, ref.size() - s - 1, MaxBand - 1});
             std::fill(dp_.begin() + i * MaxBand + lo, dp_.begin() + i * MaxBand + hi + 1, 1e30f);
             for (size_t k = lo; k <= hi; ++k) {
                 float prev = 1e30f;
@@ -126,7 +159,7 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
                 if (prev < 1e30f) dp_[i * MaxBand + k] = prev + frameDistance(live_[i], ref[s + k]);
             }
         }
-        const size_t lo = (n - 1) * 65 / 100, hi = std::min({(n - 1) * 150 / 100, ref.size() - s - 1, MaxBand - 1});
+        const size_t lo = (n - 1) * 78 / 100, hi = std::min({(n - 1) * 130 / 100, ref.size() - s - 1, MaxBand - 1});
         float cost = 1e30f;
         size_t end = lo;
         for (size_t k = lo; k <= hi; ++k) if (dp_[(n - 1) * MaxBand + k] < cost) { cost = dp_[(n - 1) * MaxBand + k]; end = k; }
@@ -140,8 +173,11 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
         if (localSearch) {
             // Continuity prior is applied to the aligned CURRENT position, not
             // the start of the rolling context window.
-            cost += 0.001f * static_cast<float>(
-                std::min(radiusSec, std::abs(currentSeconds - predictedSeconds)));
+            // Repeated measures need a meaningful continuity preference.
+            // Cap the penalty so a genuinely different, much stronger acoustic
+            // match can still win and trigger Weak/Reacquiring.
+            const double distanceSeconds = std::abs(currentSeconds - predictedSeconds);
+            cost += 0.015f * static_cast<float>(std::min(8.0, distanceSeconds));
         }
         consider(cost, s, current);
     }

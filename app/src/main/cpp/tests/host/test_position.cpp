@@ -16,7 +16,7 @@ void test_position_stretch(){auto r=makeRef();for(float ratio:{.8f,1.2f}){auto o
 void test_position_wrong(){auto r=makeRef();auto good=DtwMatcher(r).global(makeLive(r));FeatureRing q;for(int i=0;i<10;++i){AudioFeatureFrame f;f.valid=true;f.chroma[11]=1;q.push(f);}CHECK(good.matchQuality>DtwMatcher(r).global(q).matchQuality+.001f);}
 // T4: a genuinely repeated section. Both occurrences get close scores AND the
 // ambiguity margin is LOW (the non-neighbour second-best is the other occurrence).
-void test_position_repeat(){auto r=makeRepeatRef();auto q=makeLiveFrom(r,0,10);auto o=DtwMatcher(r).global(q);CHECK(o.matchQuality>.5f);CHECK(o.ambiguityMargin<.5f);}
+void test_position_repeat(){auto r=makeRepeatRef();auto q=makeLiveFrom(r,0,10);DtwMatcher d(r);std::array<size_t,8> starts{};size_t count=0;d.coarseTopK(q,5,starts,count);bool sawFirst=false,sawSecond=false;for(size_t i=0;i<count;++i){sawFirst|=starts[i]<15;sawSecond|=starts[i]>=25&&starts[i]<45;}CHECK(sawFirst);CHECK(sawSecond);auto o=d.globalOn(q,starts,count);CHECK(o.matchQuality>.5f);CHECK(o.ambiguityMargin<.05f);}
 // T5: continuity prior. Predicted near the 2nd occurrence; the local matcher
 // must return the 2nd occurrence (near the prediction), clearly past the 1st.
 void test_position_continuity(){auto r=makeRepeatRef();const double predicted=r.frames()[39].quarterBeatPosition;auto q=makeLiveFrom(r,30,10);auto o=DtwMatcher(r).localOn(q,predicted,30.0);CHECK_NEAR(o.quarterBeatPosition,r.frames()[39].quarterBeatPosition,.5);CHECK(o.quarterBeatPosition>r.frames()[10].quarterBeatPosition);}

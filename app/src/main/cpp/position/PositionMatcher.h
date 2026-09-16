@@ -47,8 +47,8 @@ private:
     static constexpr float kRelocate = 0.88f;    // allow a hard relocation / initial lock
     static constexpr float kWeakExit = 0.60f;    // leave Locked below this (hysteresis)
     static constexpr int kWeakToReacquire = 3;   // consecutive weak before Reacquiring
-    static constexpr double kLocalRadius = 30.0;    // seconds (Locked)
-    static constexpr double kLocalRadiusWide = 60.0; // seconds (Weak, widened)
+    static constexpr double kLocalRadius = 8.0;     // seconds (Locked: stay near the running path)
+    static constexpr double kLocalRadiusWide = 20.0; // seconds (Weak, widened before global reacquire)
     static constexpr size_t kTopK = 8;
     static constexpr size_t kCoarseStep = 5; // frames (0.5 s at 10 Hz)
 };

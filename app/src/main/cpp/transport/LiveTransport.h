@@ -71,13 +71,15 @@ private:
     std::atomic<int> publishedPositionState_{0};
     std::atomic<double> publishedAmbiguity_{0.0};
     std::atomic<double> publishedValidContextSeconds_{0.0};
-    // Persistent position-correction target (single writer = analyzer thread via
-    // submitPositionObservation, single reader = processFrames on the Oboe
-    // callback). The target stays active and is slewed toward on EVERY callback
-    // (rate-limited) until the cursor reaches it (|err|<0.5) or it is rejected
-    // (large + ambiguous). targetActive_ is the release/acquire handshake.
-    std::atomic<double> targetPosition_{0.0}, targetConfidence_{0.0}, targetAmbiguity_{1.0};
-    std::atomic<bool> targetActive_{false}, targetGlobal_{false};
+    // Position-correction mailbox.  Store an OFFSET observation, not a frozen
+    // absolute score position: the song keeps advancing while a correction is
+    // being slewed.  processFrames copies each new generation into the RT-only
+    // remainingPositionErrorRt_ and then drives that error toward zero.
+    std::atomic<double> correctionErrorBeats_{0.0}, correctionConfidence_{0.0}, correctionAmbiguity_{0.0};
+    std::atomic<bool> correctionValid_{false}, correctionGlobal_{false};
+    std::atomic<uint64_t> correctionGeneration_{0};
+    uint64_t appliedCorrectionGeneration_ = 0;
+    double remainingPositionErrorRt_ = 0.0;
 };
 
 } // namespace temposcore

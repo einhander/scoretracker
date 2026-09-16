@@ -189,7 +189,7 @@ void test_transport_large_ambiguous_no_jump() {
     PositionObservation o;
     o.quarterBeatPosition = 20.0; // error ~10 beats
     o.confidence = 0.9f;
-    o.ambiguityMargin = 0.3f; // ambiguous (>= 0.05)
+    o.ambiguityMargin = 0.02f; // ambiguous: best and second-best are nearly tied
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
@@ -198,14 +198,14 @@ void test_transport_large_ambiguous_no_jump() {
     CHECK(pos < 12.0); // did not jump to 20
 }
 
-// (e4) Large error (>4 beats) applied when strong + low-ambiguity.
+// (e4) Large error (>4 beats) applied when strong + UNIQUE.
 void test_transport_large_strong_applied() {
     LiveTransport t;
     t.configure(120.0, 10.0);
     PositionObservation o;
     o.quarterBeatPosition = 20.0; // error ~10 beats
     o.confidence = 0.95f; // strong (>= 0.88)
-    o.ambiguityMargin = 0.02f; // low ambiguity (< 0.05)
+    o.ambiguityMargin = 0.20f; // unique: clear best-vs-second margin
     o.valid = true;
     o.globalMatch = false;
     t.submitPositionObservation(o, 10.0);
@@ -221,13 +221,32 @@ void test_transport_global_lock_applied() {
     PositionObservation o;
     o.quarterBeatPosition = 20.0;
     o.confidence = 0.9f;
-    o.ambiguityMargin = 0.3f; // ambiguous, but...
+    o.ambiguityMargin = 0.3f; // unique enough for initial global relocation
     o.valid = true;
     o.globalMatch = true; // ...it is the initial global lock
     t.submitPositionObservation(o, 10.0);
     t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0);
+}
+
+
+// A correction is an OFFSET, not a frozen absolute target.  Four seconds after
+// observing +3 beats at 120 BPM, the nominal cursor alone should have advanced
+// from 10 to 18; the still-active correction must put it clearly AHEAD of 18,
+// not stop chasing the stale absolute target 13.
+void test_transport_offset_slew_keeps_advancing() {
+    LiveTransport t;
+    t.configure(120.0, 10.0);
+    PositionObservation o;
+    o.quarterBeatPosition = 13.0;
+    o.confidence = 0.9f;
+    o.ambiguityMargin = 0.5f;
+    o.valid = true;
+    o.globalMatch = false;
+    t.submitPositionObservation(o, 10.0);
+    for (int i = 0; i < 400; ++i) t.processFrames(480, 48000); // 4 s
+    CHECK(t.snapshot().quarterBeatPosition > 19.0);
 }
 
 static void test_transport_tempo_target_and_fallback() {
@@ -250,6 +269,7 @@ static void test_transport_tempo_target_and_fallback() {
 }
 
 REGISTER_TEST(test_transport_tempo_target_and_fallback);
+REGISTER_TEST(test_transport_offset_slew_keeps_advancing);
 REGISTER_TEST(test_matcher_acquire_lock);
 REGISTER_TEST(test_matcher_degrade_reacquire);
 REGISTER_TEST(test_matcher_silence_no_lock);
