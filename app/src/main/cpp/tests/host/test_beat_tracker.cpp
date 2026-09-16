@@ -41,6 +41,28 @@ static void test_tempo_change() {
     CHECK_NEAR(out.detectedBpm, 90.0, 6.0);
 }
 
+
+static void test_four_four_accent_does_not_lock_half_time() {
+    BeatTracker tracker;
+    tracker.configure(120.0, 48000, 1024);
+    BeatObservation out;
+    constexpr double featureRate = 48000.0 / 1024.0;
+    const float accents[4] = {1.0f, 0.05f, 0.20f, 0.05f};
+    int previousBeat = -1;
+    for (int n = 0; n < static_cast<int>(20 * featureRate); ++n) {
+        const int beat = static_cast<int>(std::floor(n * 120.0 / (60.0 * featureRate)));
+        float flux = static_cast<float>(n % 7) * 0.004f; // deterministic background flux
+        if (beat != previousBeat) {
+            previousBeat = beat;
+            flux += accents[beat & 3];
+        }
+        out = tracker.processFlux({flux, flux * 0.8f, flux * 0.5f},
+                                  flux > 0.1f ? 0.03f : 0.001f,
+                                  static_cast<int64_t>(n) * 1024);
+    }
+    CHECK_NEAR(out.detectedBpm, 120.0, 5.0);
+}
+
 static void test_silence() {
     const BeatObservation out = run(120, 120, 12, 1, 0.0f);
     CHECK(!out.tempoValid); CHECK_NEAR(out.detectedBpm, 0.0, 0.01);
@@ -86,6 +108,7 @@ REGISTER_TEST(test_90_prior_120);
 REGISTER_TEST(test_eighths);
 REGISTER_TEST(test_sixteenths);
 REGISTER_TEST(test_tempo_change);
+REGISTER_TEST(test_four_four_accent_does_not_lock_half_time);
 REGISTER_TEST(test_silence);
 REGISTER_TEST(test_amplitude_variation);
 REGISTER_TEST(test_delayed_lock_and_nonfinite_inputs);

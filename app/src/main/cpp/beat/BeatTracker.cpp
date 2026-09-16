@@ -67,10 +67,17 @@ double BeatTracker::evaluateTempo() noexcept {
     for (int lag = boundedMinLag + 1; lag < boundedMaxLag; ++lag)
         if (acValues[lag] >= acValues[lag - 1] && acValues[lag] >= acValues[lag + 1] && peakCount < 24)
             peaks[peakCount++] = lag;
+    // Resolve the 1/2x / 1x / 2x ambiguity with the MIDI tempo prior.
+    // Keep this in the estimator too (not only in LiveTransport), otherwise
+    // detectedBpm can publish a stable half-time value such as 60 for MIDI 120.
+    const double expected = expectedBpm_.load(std::memory_order_relaxed);
+    const double minLiveBpm = std::max(40.0, expected * 0.55);
+    const double maxLiveBpm = std::min(240.0, expected * 1.80);
     for (int p = 0; p < peakCount; ++p) {
         const int lag = peaks[p];
         const double bpm = featureRate_ * 60.0 / lag;
-        const double distance = std::abs(std::log2(bpm / expectedBpm_.load(std::memory_order_relaxed)));
+        if (bpm < minLiveBpm || bpm > maxLiveBpm) continue;
+        const double distance = std::abs(std::log2(bpm / expected));
         const double ac = acValues[lag];
         const double family = ac + 0.35 * correlationAt(lag * 2) + 0.20 * correlationAt(lag * 4);
         scores[lag] = family + 0.15 * std::exp(-0.5 * std::pow(distance / 0.5, 2.0));
@@ -80,6 +87,10 @@ double BeatTracker::evaluateTempo() noexcept {
         const double score = scores[peaks[p]];
         if (score > best) { second = best; best = score; chosen = featureRate_ * 60.0 / peaks[p]; }
         else if (score > second) second = score;
+    }
+    if (chosen <= 0.0 || best <= 0.0) {
+        confidence_ = 0.0f;
+        return 0.0;
     }
     const float context = std::min(1.0f, static_cast<float>(historySize_ / (featureRate_ * 6.0)));
     const double uniqueness = peakCount >= 2 ? (best - second) : 0.0;
