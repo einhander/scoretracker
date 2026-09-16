@@ -10,6 +10,7 @@ import android.view.Choreographer
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -26,7 +27,7 @@ import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
 import kotlin.math.abs
 
-class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
+class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener {
     private lateinit var binding: ActivityMainBinding
     private var score: MidiScore? = null
     private var trackSelection: TrackSelection = TrackSelection.All
@@ -35,9 +36,15 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     private var expectedBpm = 120.0
     private var nativeInitialized = false
     private var frameLoopActive = false
+    private lateinit var testAudioPlayer: TestAudioPlayer
+    private var testSeekUserDragging = false
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
+    }
+
+    private val openTestAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) loadTestAudio(uri)
     }
 
     private val requestMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -52,6 +59,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        testAudioPlayer = TestAudioPlayer(this, this)
 
         binding.loadMidiButton.setOnClickListener {
             openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
@@ -69,6 +77,41 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
             // applies the request on its next update — no cross-thread state write.
             NativeAudioBridge.requestGlobalReacquire()
         }
+
+        binding.loadTestAudioButton.setOnClickListener {
+            openTestAudio.launch(arrayOf("audio/mpeg", "audio/mp3", "audio/*"))
+        }
+        binding.testPlayPauseButton.setOnClickListener {
+            if (score == null) {
+                Toast.makeText(this, "Load MIDI first", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            // startTest() stops an active Oboe stream, so test mode and microphone
+            // input can never feed the analyzer at the same time.
+            testAudioPlayer.togglePlayPause()
+        }
+        binding.testRestartButton.setOnClickListener {
+            if (score == null) return@setOnClickListener
+            testAudioPlayer.restart()
+        }
+        binding.testStopButton.setOnClickListener { testAudioPlayer.stop() }
+        binding.testSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val duration = testAudioPlayer.durationMs
+                    val pos = if (duration > 0L) duration * progress / 1000L else 0L
+                    binding.testTimeText.text = "${formatTime(pos)} / ${formatTime(duration)}"
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) { testSeekUserDragging = true }
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                val duration = testAudioPlayer.durationMs
+                val progress = seekBar?.progress ?: 0
+                val pos = if (duration > 0L) duration * progress / 1000L else 0L
+                testSeekUserDragging = false
+                testAudioPlayer.seekTo(pos)
+            }
+        })
 
         binding.trackSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
@@ -98,6 +141,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
     }
 
     override fun onDestroy() {
+        testAudioPlayer.release()
         if (nativeInitialized) NativeAudioBridge.stop()
         super.onDestroy()
     }
@@ -117,6 +161,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
                 val parsed = MidiFileParser.parse(bytes)
                 val name = displayName(uri) ?: "MIDI"
                 runOnUiThread {
+                    testAudioPlayer.stop()
                     if (nativeInitialized && NativeAudioBridge.state().running) {
                         NativeAudioBridge.stop()
                     }
@@ -132,6 +177,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
                     binding.resetButton.isEnabled = true
                     configureNativeEngine()
                     sendScoreReferenceToNative(parsed)
+                    onTestAudioStateChanged(testAudioPlayer.state)
                     updateUiFromTransport()
                 }
             } catch (t: Throwable) {
@@ -200,6 +246,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
 
     private fun startListening() {
         if (!nativeInitialized) return
+        if (testAudioPlayer.state == TestAudioPlayer.State.Playing ||
+            testAudioPlayer.state == TestAudioPlayer.State.Paused) {
+            testAudioPlayer.stop()
+        }
         binding.listenButton.isEnabled = false
         Thread {
             val ok = NativeAudioBridge.start()
@@ -253,7 +303,59 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback {
         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
         binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
         binding.positionStatusText.text = formatPositionStatus(state)
-        binding.listenButton.text = if (state.running) getString(R.string.stop_listening) else getString(R.string.start_listening)
+        val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
+            testAudioPlayer.state == TestAudioPlayer.State.Paused
+        binding.listenButton.isEnabled = !testActive
+        binding.listenButton.text = if (state.running && !testActive) {
+            getString(R.string.stop_listening)
+        } else {
+            getString(R.string.start_listening)
+        }
+    }
+
+    private fun loadTestAudio(uri: Uri) {
+        val name = displayName(uri) ?: "test audio"
+        testAudioPlayer.load(uri)
+        binding.testAudioNameText.text = name
+        binding.testPlayPauseButton.isEnabled = score != null
+        binding.testRestartButton.isEnabled = score != null
+        binding.testStopButton.isEnabled = false
+        binding.testSeekBar.isEnabled = true
+    }
+
+    override fun onTestAudioStateChanged(state: TestAudioPlayer.State) {
+        val hasAudio = state != TestAudioPlayer.State.Empty
+        val active = state == TestAudioPlayer.State.Playing || state == TestAudioPlayer.State.Paused
+        binding.testPlayPauseButton.isEnabled = hasAudio && score != null
+        binding.testRestartButton.isEnabled = hasAudio && score != null
+        binding.testStopButton.isEnabled = active
+        binding.testSeekBar.isEnabled = hasAudio
+        binding.testPlayPauseButton.text = when (state) {
+            TestAudioPlayer.State.Playing -> getString(R.string.test_pause)
+            else -> getString(R.string.test_play)
+        }
+        binding.listenButton.isEnabled = !active && score != null
+        if (state == TestAudioPlayer.State.Empty) {
+            binding.testAudioNameText.text = getString(R.string.no_test_audio)
+        }
+    }
+
+    override fun onTestAudioProgress(positionMs: Long, durationMs: Long) {
+        if (!testSeekUserDragging) {
+            binding.testTimeText.text = "${formatTime(positionMs)} / ${formatTime(durationMs)}"
+            binding.testSeekBar.progress = if (durationMs > 0L) {
+                ((positionMs.coerceIn(0L, durationMs) * 1000L) / durationMs).toInt()
+            } else 0
+        }
+    }
+
+    override fun onTestAudioError(message: String) {
+        Toast.makeText(this, "Test audio error: $message", Toast.LENGTH_LONG).show()
+    }
+
+    private fun formatTime(ms: Long): String {
+        val totalSeconds = (ms.coerceAtLeast(0L) / 1000L)
+        return String.format(Locale.US, "%d:%02d", totalSeconds / 60L, totalSeconds % 60L)
     }
 
     private fun formatPositionStatus(state: TransportSnapshot): String = when (state.positionState) {

@@ -11,6 +11,9 @@ object NativeAudioBridge {
 
     external fun initialize(expectedBpm: Double, startQuarterBeat: Double)
     external fun start(): Boolean
+    external fun startTest(sampleRate: Int): Boolean
+    external fun pushTestAudio(samples: FloatArray)
+    external fun stopTest()
     external fun stop()
     external fun setExpectedBpm(bpm: Double)
     external fun resetPosition(startQuarterBeat: Double)

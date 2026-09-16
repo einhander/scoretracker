@@ -16,6 +16,10 @@ class OboeInputEngine final : public oboe::AudioStreamDataCallback,
 public:
     void initialize(double expectedBpm, double startQuarterBeat) noexcept;
     bool start();
+    // Deterministic test source: no microphone/Oboe stream. Decoded mono PCM
+    // is pushed from Android through pushTestAudio() at playback pace.
+    bool startTest(int32_t sampleRate);
+    void pushTestAudio(const float* mono, size_t numFrames) noexcept;
     void stop();
     void setExpectedBpm(double bpm) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;

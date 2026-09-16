@@ -8,4 +8,11 @@
     <string name="permission_required">Microphone permission is required for tempo tracking.</string>
     <string name="track_label">Track</string>
     <string name="all_tracks">All tracks</string>
+    <string name="test_mode">Test MP3</string>
+    <string name="load_test_audio">Load MP3</string>
+    <string name="test_play">Play</string>
+    <string name="test_pause">Pause</string>
+    <string name="test_restart">Restart</string>
+    <string name="test_stop">Stop</string>
+    <string name="no_test_audio">No test audio</string>
 </resources>

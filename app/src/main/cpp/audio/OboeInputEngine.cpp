@@ -61,6 +61,28 @@ bool OboeInputEngine::start() {
     return true;
 }
 
+bool OboeInputEngine::startTest(int32_t sampleRate) {
+    stop();
+    if (sampleRate < 8000 || sampleRate > 192000) return false;
+
+    sampleRate_ = sampleRate;
+    channelCount_ = 1;
+    streamError_.store(false, std::memory_order_relaxed);
+    ring_.reset();
+    if (matcher_) matcher_->begin();
+    if (!analyzer_.start(sampleRate_, expectedBpm_)) return false;
+    transport_.setRunning(true);
+    return true;
+}
+
+void OboeInputEngine::pushTestAudio(const float* mono, size_t numFrames) noexcept {
+    if (mono == nullptr || numFrames == 0 || !transport_.snapshot().running) return;
+    // Test PCM is paced by AudioTrack on the Kotlin side. Advance the exact same
+    // transport clock and feed the exact same analyzer ring as the Oboe callback.
+    transport_.processFrames(static_cast<int32_t>(numFrames), sampleRate_);
+    ring_.write(mono, numFrames);
+}
+
 void OboeInputEngine::stop() {
     // Join the analyzer FIRST: no further submitPositionObservation can land
     // after this, so the Idle state published below is the final one (gate-5 m8).

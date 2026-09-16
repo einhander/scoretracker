@@ -47,6 +47,76 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/testControlsRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:text="@string/test_mode"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/loadTestAudioButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/load_test_audio" />
+
+        <Button
+            android:id="@+id/testPlayPauseButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:enabled="false"
+            android:text="@string/test_play" />
+
+        <Button
+            android:id="@+id/testRestartButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:enabled="false"
+            android:text="@string/test_restart" />
+
+        <Button
+            android:id="@+id/testStopButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:enabled="false"
+            android:text="@string/test_stop" />
+
+        <TextView
+            android:id="@+id/testAudioNameText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:text="@string/no_test_audio" />
+
+        <TextView
+            android:id="@+id/testTimeText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:text="0:00 / 0:00" />
+    </LinearLayout>
+
+    <SeekBar
+        android:id="@+id/testSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:enabled="false"
+        android:max="1000" />
+
+    <LinearLayout
         android:id="@+id/trackSelectorRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

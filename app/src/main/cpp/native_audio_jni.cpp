@@ -19,6 +19,30 @@ Java_com_einhander_temposcore_NativeAudioBridge_start(JNIEnv*, jobject) {
     return gEngine.start() ? JNI_TRUE : JNI_FALSE;
 }
 
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_startTest(
+        JNIEnv*, jobject, jint sampleRate) {
+    return gEngine.startTest(sampleRate) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_pushTestAudio(
+        JNIEnv* env, jobject, jfloatArray samples) {
+    if (samples == nullptr) return;
+    const jsize n = env->GetArrayLength(samples);
+    if (n <= 0) return;
+    jboolean isCopy = JNI_FALSE;
+    jfloat* data = env->GetFloatArrayElements(samples, &isCopy);
+    if (data == nullptr) return;
+    gEngine.pushTestAudio(data, static_cast<size_t>(n));
+    env->ReleaseFloatArrayElements(samples, data, JNI_ABORT);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_stopTest(JNIEnv*, jobject) {
+    gEngine.stop();
+}
 extern "C" JNIEXPORT void JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_stop(JNIEnv*, jobject) {
     gEngine.stop();
