@@ -67,9 +67,6 @@ double BeatTracker::evaluateTempo() noexcept {
     for (int lag = boundedMinLag + 1; lag < boundedMaxLag; ++lag)
         if (acValues[lag] >= acValues[lag - 1] && acValues[lag] >= acValues[lag + 1] && peakCount < 24)
             peaks[peakCount++] = lag;
-    // Resolve the 1/2x / 1x / 2x ambiguity with the MIDI tempo prior.
-    // Keep this in the estimator too (not only in LiveTransport), otherwise
-    // detectedBpm can publish a stable half-time value such as 60 for MIDI 120.
     const double expected = expectedBpm_.load(std::memory_order_relaxed);
     const double minLiveBpm = std::max(40.0, expected * 0.55);
     const double maxLiveBpm = std::min(240.0, expected * 1.80);
@@ -77,10 +74,23 @@ double BeatTracker::evaluateTempo() noexcept {
         const int lag = peaks[p];
         const double bpm = featureRate_ * 60.0 / lag;
         if (bpm < minLiveBpm || bpm > maxLiveBpm) continue;
-        const double distance = std::abs(std::log2(bpm / expected));
+
+        const double expectedDistance = std::abs(std::log2(bpm / expected));
         const double ac = acValues[lag];
         const double family = ac + 0.35 * correlationAt(lag * 2) + 0.20 * correlationAt(lag * 4);
-        scores[lag] = family + 0.15 * std::exp(-0.5 * std::pow(distance / 0.5, 2.0));
+
+        // Autocorrelation is inherently ambiguous: strong subdivisions/bar accents
+        // can produce 1/2 and 2/3-tempo peaks.  The MIDI tempo is therefore a real
+        // prior, not just a tie-breaker.  Once locked, also favour continuity with
+        // the running estimate so a short accent pattern cannot pull 110-120 BPM
+        // down to ~80 BPM.
+        double score = family
+            + 0.35 * std::exp(-0.5 * std::pow(expectedDistance / 0.35, 2.0));
+        if (estimatedBpm_ > 0.0) {
+            const double continuityDistance = std::abs(std::log2(bpm / estimatedBpm_));
+            score += 0.30 * std::exp(-0.5 * std::pow(continuityDistance / 0.20, 2.0));
+        }
+        scores[lag] = score;
     }
     double best = 0.0, second = 0.0, chosen = 0.0;
     for (int p = 0; p < peakCount; ++p) {

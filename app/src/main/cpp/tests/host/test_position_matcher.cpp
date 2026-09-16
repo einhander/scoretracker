@@ -72,7 +72,7 @@ void test_matcher_acquire_lock() {
     m.begin();
     auto q = makeLiveFrom(r, 0, 60);
     auto o1 = m.update(q, 0.0);
-    auto o2 = m.update(q, o1.quarterBeatPosition);
+    auto o2 = m.update(q, 0.0);
     CHECK(m.state() == PositionTrackingState::Locked);
     CHECK(o2.confidence >= 0.8f);
 }
@@ -121,8 +121,10 @@ void test_matcher_ambiguous_no_jump() {
     }
     // Stable: no jumping between the two A occurrences.
     CHECK(stable);
-    // Not on the middle (B) section (frame 60, qbp ~ 12).
-    CHECK(std::abs(prev - r.frames()[60].quarterBeatPosition) > 3.0);
+    // With current/end-position semantics, the first A ends near frame 59 and
+    // the second A near frame 179.  A repeated match may choose either, but it
+    // must not land in the middle of the B section (around frame 90).
+    CHECK(std::abs(prev - r.frames()[90].quarterBeatPosition) > 3.0);
 }
 
 // (e1) Small error (<0.5 beat) applied directly.

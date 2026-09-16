@@ -28,9 +28,11 @@ private:
     // Local DTW with the given radius (seconds).
     PositionObservation trackLocal(const FeatureRing& f, double predicted, double radiusSec) noexcept;
     // Confidence = DTW quality * valid-fraction * (0.7 + 0.3 * stability).
-    float computeConfidence(const PositionObservation& o, const FeatureRing& f) const noexcept;
-    // Bounded continuity prior: does the new position agree with the last?
-    bool positionAgrees(const PositionObservation& o) const noexcept;
+    float computeConfidence(const PositionObservation& o, const FeatureRing& f,
+                            double predicted) const noexcept;
+    // Bounded continuity prior: compare against the expected progression since
+    // the previous observation, not against the previous absolute position.
+    bool positionAgrees(const PositionObservation& o, double predicted) const noexcept;
 
     DtwMatcher dtw_;
     std::atomic<bool> reacquireRequested_{false}; // main thread -> analyzer thread
@@ -38,6 +40,7 @@ private:
     int stable_ = 0;       // consecutive agreeing observations (initial-lock stability)
     int weakStreak_ = 0;   // consecutive weak observations (hysteresis before Reacquiring)
     double lastPosition_ = 0.0;
+    double lastPredicted_ = 0.0;
     bool hasLast_ = false;
 
     static constexpr float kLock = 0.80f;        // enter Locked

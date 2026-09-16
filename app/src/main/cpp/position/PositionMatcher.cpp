@@ -2,11 +2,13 @@
 #include <algorithm>
 #include <cmath>
 namespace temposcore {
-bool PositionMatcher::positionAgrees(const PositionObservation& o) const noexcept {
+bool PositionMatcher::positionAgrees(const PositionObservation& o, double predicted) const noexcept {
     if (!hasLast_) return true;
-    return std::abs(o.quarterBeatPosition - lastPosition_) <= 1.0; // within 1 beat
+    const double expectedNow = lastPosition_ + (predicted - lastPredicted_);
+    return std::abs(o.quarterBeatPosition - expectedNow) <= 1.0; // within 1 beat of expected progression
 }
-float PositionMatcher::computeConfidence(const PositionObservation& o, const FeatureRing& f) const noexcept {
+float PositionMatcher::computeConfidence(const PositionObservation& o, const FeatureRing& f,
+                                         double predicted) const noexcept {
     if (!o.valid) return 0.0f;
     // Base: the DTW confidence (matchQuality * window-fill * margin factor).
     float base = o.confidence;
@@ -22,7 +24,8 @@ float PositionMatcher::computeConfidence(const PositionObservation& o, const Fea
     // Stability: bounded continuity prior (agreement with the previous position).
     float stability = 1.0f;
     if (hasLast_) {
-        const double err = std::abs(o.quarterBeatPosition - lastPosition_);
+        const double expectedNow = lastPosition_ + (predicted - lastPredicted_);
+        const double err = std::abs(o.quarterBeatPosition - expectedNow);
         stability = err <= 1.0 ? 1.0f : static_cast<float>(std::max(0.0, 1.0 - (err - 1.0) / 3.0));
     }
     return base * (0.7f + 0.3f * stability);
@@ -58,8 +61,8 @@ PositionObservation PositionMatcher::update(const FeatureRing& f, double predict
     } else {
         o = acquireGlobal(f, predicted);
     }
-    const bool agrees = positionAgrees(o);
-    const float conf = computeConfidence(o, f);
+    const bool agrees = positionAgrees(o, predicted);
+    const float conf = computeConfidence(o, f, predicted);
     o.confidence = conf;
     // Re-derive validity from the FINAL confidence (not the raw DTW confidence),
     // so the transport's correction gate and the "strong" check agree.
@@ -102,6 +105,7 @@ PositionObservation PositionMatcher::update(const FeatureRing& f, double predict
     // (quarterBeatPosition=0) must not poison the next "does it agree?" check.
     if (o.valid) {
         lastPosition_ = o.quarterBeatPosition;
+        lastPredicted_ = predicted;
         hasLast_ = true;
     }
     o.state = state_;

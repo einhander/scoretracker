@@ -22,7 +22,8 @@ public:
     // Fine constrained DTW restricted to the given candidate start positions.
     PositionObservation globalOn(const FeatureRing& l, const std::array<size_t, 8>& starts,
                                  size_t count) noexcept;
-    // Local constrained DTW with an explicit search radius (seconds).
+    // Local constrained DTW. predicted is quarterBeatPosition; radius is seconds
+    // on the score reference nominal-time axis.
     PositionObservation localOn(const FeatureRing& l, double predicted, double radiusSec) noexcept;
     static float frameDistance(const AudioFeatureFrame&, const ScoreFeatureFrame&) noexcept;
 private:

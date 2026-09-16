@@ -68,24 +68,50 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
     for (size_t i = 0; i < n; ++i) if (live_[i].valid) ++valid;
     if (valid < n / 2 || ref.empty()) return o;
 
-    struct Cand { float cost; size_t s; };
+    struct Cand { float cost; size_t s; size_t current; };
     std::array<Cand, 16> top{};
     size_t topN = 0;
-    auto consider = [&](float cost, size_t s) {
+    auto consider = [&](float cost, size_t s, size_t current) {
         if (topN < 16) {
-            top[topN++] = {cost, s};
+            top[topN++] = {cost, s, current};
             for (size_t k = topN; k > 1 && top[k - 1].cost < top[k - 2].cost; --k) std::swap(top[k - 1], top[k - 2]);
         } else if (cost < top[15].cost) {
-            top[15] = {cost, s};
+            top[15] = {cost, s, current};
             for (size_t k = 15; k > 0 && top[k].cost < top[k - 1].cost; --k) std::swap(top[k], top[k - 1]);
         }
     };
+
+    // `predicted` is a musical position (quarter beats), because that is what
+    // LiveTransport publishes.  Convert it to the reference nominal-time axis
+    // used for the local-search radius.  The old code compared quarter beats to
+    // seconds directly, which moved the local search window to the wrong place.
+    double predictedSeconds = 0.0;
+    if (localSearch) {
+        auto it = std::lower_bound(ref.begin(), ref.end(), predicted,
+            [](const ScoreFeatureFrame& f, double q) { return f.quarterBeatPosition < q; });
+        if (it == ref.end()) predictedSeconds = ref.back().nominalSeconds;
+        else if (it == ref.begin()) predictedSeconds = it->nominalSeconds;
+        else {
+            const auto prev = it - 1;
+            predictedSeconds = (std::abs(it->quarterBeatPosition - predicted) <
+                                std::abs(prev->quarterBeatPosition - predicted))
+                ? it->nominalSeconds : prev->nominalSeconds;
+        }
+    }
+    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
 
     const size_t nCand = (startList != nullptr) ? startCount : ref.size();
     for (size_t ci = 0; ci < nCand; ++ci) {
         const size_t s = (startList != nullptr) ? startList[ci] : ci;
         if (s >= ref.size()) continue;
-        if (localSearch && std::abs(ref[s].nominalSeconds - predicted) > radiusSec) continue;
+        if (localSearch) {
+            // s is the START of the rolling live window, while predictedSeconds
+            // describes "now" (the END).  Use an approximate end only as a cheap
+            // pre-filter; the exact aligned end is checked after DTW below.
+            const double approxEndSeconds = ref[s].nominalSeconds + liveSpanSeconds;
+            const double prefilterRadius = radiusSec + 0.55 * liveSpanSeconds;
+            if (std::abs(approxEndSeconds - predictedSeconds) > prefilterRadius) continue;
+        }
         if (ref.size() - s <= ((n - 1) * 65 / 100)) continue;
         dp_[0] = frameDistance(live_[0], ref[s]);
         for (size_t i = 1; i < n; ++i) {
@@ -105,27 +131,33 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
         size_t end = lo;
         for (size_t k = lo; k <= hi; ++k) if (dp_[(n - 1) * MaxBand + k] < cost) { cost = dp_[(n - 1) * MaxBand + k]; end = k; }
         if (cost >= 1e30f) continue;
-        if (localSearch) {
-            // Bounded continuity prior: a small penalty for distance from the
-            // predicted position so a match near the prediction is preferred over
-            // an equally good match elsewhere (1st vs 2nd occurrence of a repeat).
-            // Bounded: a clearly stronger unique match elsewhere still wins.
-            cost += 0.01f * std::abs(ref[s].nominalSeconds - predicted);
-        }
+        const size_t current = s + end;
+        if (current >= ref.size()) continue;
+        const double currentSeconds = ref[current].nominalSeconds;
+        if (localSearch && std::abs(currentSeconds - predictedSeconds) > radiusSec) continue;
+
         cost /= static_cast<float>(n + end);
-        consider(cost, s);
+        if (localSearch) {
+            // Continuity prior is applied to the aligned CURRENT position, not
+            // the start of the rolling context window.
+            cost += 0.001f * static_cast<float>(
+                std::min(radiusSec, std::abs(currentSeconds - predictedSeconds)));
+        }
+        consider(cost, s, current);
     }
     if (topN == 0) return o;
     const float bestCost = top[0].cost;
-    const size_t best = top[0].s;
-    // Non-neighbour second-best: the best candidate at least 2 s (20 frames)
-    // from the best, so the ambiguity margin reflects a genuine alternative
-    // (e.g. a repeated section) rather than a shifted version of the same match.
+    const size_t bestCurrent = top[0].current;
+    // Non-neighbour second-best: compare CURRENT aligned positions.  Candidate
+    // starts are an implementation detail of the rolling context window.
     float second = 1e30f;
     for (size_t i = 1; i < topN; ++i) {
-        if (std::abs(static_cast<double>(top[i].s) - static_cast<double>(best)) >= 20.0) { second = top[i].cost; break; }
+        if (std::abs(ref[top[i].current].nominalSeconds - ref[bestCurrent].nominalSeconds) >= 2.0) {
+            second = top[i].cost;
+            break;
+        }
     }
-    o.quarterBeatPosition = ref[best].quarterBeatPosition;
+    o.quarterBeatPosition = ref[bestCurrent].quarterBeatPosition;
     o.matchQuality = 1 / (1 + bestCost);
     o.ambiguityMargin = std::max(0.0f, second - bestCost);
     o.confidence = o.matchQuality * std::min(1.0f, static_cast<float>(n) / 60.0f) * std::min(1.0f, o.ambiguityMargin * 10);
