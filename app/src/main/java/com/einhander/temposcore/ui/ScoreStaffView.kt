@@ -7,12 +7,14 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.NoteNaming
 import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 /**
  * Deliberately simple score preview for the scaffold.
@@ -93,6 +95,30 @@ class ScoreStaffView @JvmOverloads constructor(
 
     private fun pixelsPerQuarterBeat(): Float = max(52f, width.toFloat() / 10f)
 
+    /** Treble staff reference: B4 is middle line, E4 is bottom line, F5 is top line. */
+    private fun diatonicStepFromB4(pitch: Int): Int {
+        val p = pitch.coerceIn(0, 127)
+        val octave = p / 12 - 1
+        val letterStep = when (p % 12) {
+            0, 1 -> 0 // C / C♯
+            2, 3 -> 1 // D / D♯
+            4 -> 2 // E
+            5, 6 -> 3 // F / F♯
+            7, 8 -> 4 // G / G♯
+            9, 10 -> 5 // A / A♯
+            else -> 6 // B
+        }
+        return octave * 7 + letterStep - (4 * 7 + 6)
+    }
+
+    /** Keep register shifts stable while notes enter/leave temporal preview window. */
+    private fun displayOctaveShift(notes: List<MidiNote>): Int {
+        if (notes.isEmpty()) return 0
+        var stepSum = 0
+        notes.forEach { stepSum += diatonicStepFromB4(it.pitch) }
+        return (-stepSum.toDouble() / notes.size / 7.0).roundToInt().coerceIn(-3, 3)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         val localScore = score ?: return false
         when (event.actionMasked) {
@@ -157,7 +183,9 @@ class ScoreStaffView @JvmOverloads constructor(
         val futureWindow = 8.0
         val minBeat = quarterBeatPosition - pastWindow
         val maxBeat = quarterBeatPosition + futureWindow
-        val visibleNotes = localScore.visibleNotes(trackSelection).asSequence()
+        val selectedNotes = localScore.visibleNotes(trackSelection)
+        val octaveShift = displayOctaveShift(selectedNotes)
+        val visibleNotes = selectedNotes.asSequence()
             .filter {
                 val beat = localScore.noteStartBeat(it)
                 beat in minBeat..maxBeat
@@ -169,33 +197,35 @@ class ScoreStaffView @JvmOverloads constructor(
         noteLabelPaint.textSize = labelSize
         val updatedFontMetrics = noteLabelPaint.fontMetrics
         val minBaseline = max(0f, -updatedFontMetrics.top + labelGap)
-        val stemHeight = lineGap * 1.7f
-        val noteTop = max(
-            24f,
-            stemHeight + obstaclePadding + labelGap * 2f +
-                updatedFontMetrics.bottom - updatedFontMetrics.top + 4f,
-        )
-        val noteBottom = max(noteTop, h - 7f - obstaclePadding - 4f)
-        val pitchMin = visibleNotes.minOfOrNull { it.pitch } ?: 64
-        val pitchMax = visibleNotes.maxOfOrNull { it.pitch } ?: 64
-        val pitchRange = (pitchMax - pitchMin).coerceAtLeast(1)
-        val verticalRange = (noteBottom - noteTop).coerceAtLeast(1f)
         val notesToDraw = visibleNotes
             .map { note ->
                 val startBeat = localScore.noteStartBeat(note)
                 val x = cursorX + ((startBeat - quarterBeatPosition) * pixelsPerQuarterBeat).toFloat()
-                // Fit visible pitch range into viewport while preserving pitch ordering.
-                val y = if (pitchMax == pitchMin) {
-                    staffCenter.coerceIn(noteTop, noteBottom)
-                } else {
-                    noteTop + (pitchMax - note.pitch) * verticalRange / pitchRange
-                }
+                // Stable diatonic staff position. Accidentals share their natural letter step.
+                val staffStep = diatonicStepFromB4(note.pitch) + octaveShift * 7
+                val y = staffCenter - staffStep * (lineGap / 2f)
                 Triple(note, x, y)
-            }
+        }
+
+        if (octaveShift != 0) {
+            canvas.drawText(if (octaveShift < 0) "8va" else "8vb", 28f, 42f, textPaint)
+        }
 
         notesToDraw.forEach { (note, x, y) ->
             val startBeat = localScore.noteStartBeat(note)
             val paint = if (startBeat <= quarterBeatPosition + 0.05) notePaint else futurePaint
+            val staffStep = diatonicStepFromB4(note.pitch) + octaveShift * 7
+            if (staffStep > 4) {
+                for (ledgerStep in 6..staffStep step 2) {
+                    val ledgerY = staffCenter - ledgerStep * (lineGap / 2f)
+                    canvas.drawLine(x - 16f, ledgerY, x + 16f, ledgerY, linePaint)
+                }
+            } else if (staffStep < -4) {
+                for (ledgerStep in -6 downTo staffStep step 2) {
+                    val ledgerY = staffCenter - ledgerStep * (lineGap / 2f)
+                    canvas.drawLine(x - 16f, ledgerY, x + 16f, ledgerY, linePaint)
+                }
+            }
             val oval = RectF(x - 11f, y - 7f, x + 11f, y + 7f)
             canvas.drawOval(oval, paint)
             canvas.drawLine(x + 10f, y, x + 10f, y - lineGap * 1.7f, paint)

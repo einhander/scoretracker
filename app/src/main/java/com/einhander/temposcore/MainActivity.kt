@@ -414,7 +414,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         showTestMode = visible
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
-        if (!showTestMode) testAudioPlayer.stop()
         applyTestModeVisibility()
     }
 
