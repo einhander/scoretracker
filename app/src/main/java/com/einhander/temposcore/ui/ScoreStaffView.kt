@@ -8,6 +8,8 @@ import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
 import com.einhander.temposcore.midi.MidiScore
+import com.einhander.temposcore.score.NoteNaming
+import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
 import kotlin.math.max
@@ -23,6 +25,13 @@ class ScoreStaffView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
+
+    private data class LabelBounds(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+    )
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xff222222.toInt()
@@ -44,6 +53,11 @@ class ScoreStaffView @JvmOverloads constructor(
         color = 0xff333333.toInt()
         textSize = 28f
     }
+    private val noteLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xff333333.toInt()
+        textAlign = Paint.Align.CENTER
+        typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
+    }
 
     var score: MidiScore? = null
         set(value) {
@@ -58,6 +72,12 @@ class ScoreStaffView @JvmOverloads constructor(
         }
 
     var trackSelection: TrackSelection = TrackSelection.All
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    var noteNaming: NoteNaming = NoteNaming.Letters
         set(value) {
             field = value
             invalidate()
@@ -137,22 +157,102 @@ class ScoreStaffView @JvmOverloads constructor(
         val futureWindow = 8.0
         val minBeat = quarterBeatPosition - pastWindow
         val maxBeat = quarterBeatPosition + futureWindow
-
-        localScore.visibleNotes(trackSelection).asSequence()
+        val notesToDraw = localScore.visibleNotes(trackSelection).asSequence()
             .filter {
                 val beat = localScore.noteStartBeat(it)
                 beat in minBeat..maxBeat
             }
-            .forEach { note ->
+            .map { note ->
                 val startBeat = localScore.noteStartBeat(note)
                 val x = cursorX + ((startBeat - quarterBeatPosition) * pixelsPerQuarterBeat).toFloat()
-                // Approximate vertical mapping around E4 (MIDI 64). Proper notation comes later.
                 val semitoneStep = lineGap / 3.5f
                 val y = staffCenter - (note.pitch - 64) * semitoneStep
-                val paint = if (startBeat <= quarterBeatPosition + 0.05) notePaint else futurePaint
-                val oval = RectF(x - 11f, y - 7f, x + 11f, y + 7f)
-                canvas.drawOval(oval, paint)
-                canvas.drawLine(x + 10f, y, x + 10f, y - lineGap * 1.7f, paint)
+                Triple(note, x, y)
             }
+            .toList()
+
+        notesToDraw.forEach { (note, x, y) ->
+            val startBeat = localScore.noteStartBeat(note)
+            val paint = if (startBeat <= quarterBeatPosition + 0.05) notePaint else futurePaint
+            val oval = RectF(x - 11f, y - 7f, x + 11f, y + 7f)
+            canvas.drawOval(oval, paint)
+            canvas.drawLine(x + 10f, y, x + 10f, y - lineGap * 1.7f, paint)
+        }
+
+        if (notesToDraw.isNotEmpty()) {
+            val labelSize = max(16f, 14f * resources.displayMetrics.scaledDensity)
+            val labelGap = max(4f, 3f * resources.displayMetrics.density)
+            val obstaclePadding = max(3f, 2f * resources.displayMetrics.density)
+            val placedLabels = ArrayList<LabelBounds>(notesToDraw.size)
+            noteLabelPaint.textSize = labelSize
+            val updatedFontMetrics = noteLabelPaint.fontMetrics
+            val minBaseline = max(0f, -updatedFontMetrics.top + labelGap)
+
+            fun overlaps(left: Float, top: Float, right: Float, bottom: Float,
+                otherLeft: Float, otherTop: Float, otherRight: Float, otherBottom: Float,
+            ): Boolean = left < otherRight && otherLeft < right && top < otherBottom && otherTop < bottom
+
+            fun intersectsNoteGeometry(bounds: LabelBounds): Boolean {
+                notesToDraw.forEach { (_, noteX, noteY) ->
+                    if (overlaps(
+                            bounds.left, bounds.top, bounds.right, bounds.bottom,
+                            noteX - 11f - obstaclePadding,
+                            noteY - 7f - obstaclePadding,
+                            noteX + 11f + obstaclePadding,
+                            noteY + 7f + obstaclePadding,
+                        ) || overlaps(
+                            bounds.left, bounds.top, bounds.right, bounds.bottom,
+                            noteX + 10f - 1f - obstaclePadding,
+                            noteY - lineGap * 1.7f - obstaclePadding,
+                            noteX + 10f + 1f + obstaclePadding,
+                            noteY + obstaclePadding,
+                        )
+                    ) return true
+                }
+                return false
+            }
+
+            // Keep labels attached to note x while moving only upward. Skip when no safe space remains.
+            notesToDraw.forEach { (note, x, y) ->
+                val label = ScoreNavigator.pitchName(note.pitch, noteNaming)
+                val halfWidth = noteLabelPaint.measureText(label) / 2f
+                if (x - halfWidth < 0f || x + halfWidth > w) return@forEach
+
+                val stemTop = y - lineGap * 1.7f
+                val highestSafeBaseline = stemTop - obstaclePadding - labelGap - updatedFontMetrics.bottom
+                var baseline = highestSafeBaseline
+                var bounds = LabelBounds(
+                    x - halfWidth,
+                    baseline + updatedFontMetrics.top - labelGap,
+                    x + halfWidth,
+                    baseline + updatedFontMetrics.bottom + labelGap,
+                )
+                while (baseline - (labelSize + labelGap) >= minBaseline &&
+                    (placedLabels.any { overlaps(
+                        it.left, it.top, it.right, it.bottom,
+                        bounds.left, bounds.top, bounds.right, bounds.bottom,
+                    ) } || intersectsNoteGeometry(bounds))
+                ) {
+                    baseline -= labelSize + labelGap
+                    bounds = LabelBounds(
+                        x - halfWidth,
+                        baseline + updatedFontMetrics.top - labelGap,
+                        x + halfWidth,
+                        baseline + updatedFontMetrics.bottom + labelGap,
+                    )
+                }
+
+                // Never clamp below stem or record a colliding label after space runs out.
+                if (baseline < minBaseline || bounds.top < 0f || bounds.bottom > h ||
+                    placedLabels.any { overlaps(
+                        it.left, it.top, it.right, it.bottom,
+                        bounds.left, bounds.top, bounds.right, bounds.bottom,
+                    ) } || intersectsNoteGeometry(bounds)
+                ) return@forEach
+
+                canvas.drawText(label, x, baseline, noteLabelPaint)
+                placedLabels += bounds
+            }
+        }
     }
 }

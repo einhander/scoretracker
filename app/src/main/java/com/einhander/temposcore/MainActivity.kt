@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             NoteNaming.Solfege.name -> NoteNaming.Solfege
             else -> NoteNaming.Letters
         }
+        binding.scoreView.noteNaming = noteNaming
         showTestMode = prefs.getBoolean(KEY_SHOW_TEST_MODE, false)
         applyTestModeVisibility()
 
@@ -148,7 +149,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                 if (spinnerPopulating) return
-                trackSelection = if (pos == 0) TrackSelection.All else TrackSelection.Track(pos - 1)
+                trackSelection = TrackSelection.Track(pos)
                 visibleNotes = score?.visibleNotes(trackSelection) ?: emptyList()
                 binding.scoreView.trackSelection = trackSelection
                 updateUiFromTransport()
@@ -197,7 +198,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                     }
                     score = parsed
                     val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
-                    trackSelection = if (defaultTrack != null) TrackSelection.Track(defaultTrack) else TrackSelection.All
+                    trackSelection = defaultTrack?.let { TrackSelection.Track(it) }
+                        ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
+                        ?: TrackSelection.All
                     visibleNotes = parsed.visibleNotes(trackSelection)
                     binding.scoreView.trackSelection = trackSelection
                     populateTrackSelector(parsed)
@@ -223,8 +226,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun populateTrackSelector(score: MidiScore) {
         if (score.tracks.size > 1) {
-            val items = listOf(getString(R.string.all_tracks)) +
-                score.tracks.map { ScoreNavigator.trackLabel(it, noteNaming) }
+            val items = score.tracks.map { ScoreNavigator.trackLabel(it, noteNaming) }
             val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
                 setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
             }
@@ -234,17 +236,28 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             spinnerPopulating = true
             binding.trackSpinner.adapter = adapter
             val selection = when (val selected = trackSelection) {
-                TrackSelection.All -> 0
-                is TrackSelection.Track -> (selected.index + 1).coerceIn(1, items.lastIndex)
+                TrackSelection.All -> {
+                    val firstTrack = score.tracks.first().index
+                    trackSelection = TrackSelection.Track(firstTrack)
+                    visibleNotes = score.visibleNotes(trackSelection)
+                    binding.scoreView.trackSelection = trackSelection
+                    firstTrack.coerceIn(0, items.lastIndex)
+                }
+                is TrackSelection.Track -> selected.index.coerceIn(0, items.lastIndex)
             }
             binding.trackSpinner.setSelection(selection, false)
             spinnerPopulating = false
             binding.trackSelectorRow.visibility = View.VISIBLE
         } else {
-            // A single-track MIDI still defaults to that track rather than All.
-            trackSelection = TrackSelection.Track(0)
-            visibleNotes = score.visibleNotes(trackSelection)
-            binding.scoreView.trackSelection = trackSelection
+            if (score.tracks.size == 1) {
+                trackSelection = TrackSelection.Track(score.tracks[0].index)
+                visibleNotes = score.visibleNotes(trackSelection)
+                binding.scoreView.trackSelection = trackSelection
+            } else {
+                trackSelection = TrackSelection.All
+                visibleNotes = emptyList()
+                binding.scoreView.trackSelection = trackSelection
+            }
             binding.trackSpinner.adapter = null
             binding.trackSelectorRow.visibility = View.GONE
         }
@@ -385,6 +398,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private fun setNoteNaming(value: NoteNaming) {
         if (noteNaming == value) return
         noteNaming = value
+        binding.scoreView.noteNaming = value
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putString(KEY_NOTE_NAMING, value.name).apply()
         score?.let { populateTrackSelector(it) }
