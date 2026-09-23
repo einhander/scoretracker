@@ -44,6 +44,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var showTestMode = false
     private var scoreScrubActive = false
     private var scoreScrubPosition = 0.0
+    private var smoothedTestPosition = 0.0
+    private var lastNativePosition = 0.0
+    private var lastPresentationNanos = 0L
+    private var lastNativeRunning = false
+    private var lastPositionState: PositionTrackingState? = null
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
@@ -323,14 +328,25 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private fun updateUiFromTransport() {
         val localScore = score ?: return
         val state = if (nativeInitialized) NativeAudioBridge.state() else return
-        val pos = if (scoreScrubActive) scoreScrubPosition else state.quarterBeatPosition.coerceAtLeast(0.0)
+        val testPlaying = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
+            testAudioPlayer.state == TestAudioPlayer.State.Paused
+        val authoritativePos = state.quarterBeatPosition.coerceAtLeast(0.0)
+        val pos = if (scoreScrubActive) {
+            resetTestPresentation(authoritativePos)
+            scoreScrubPosition
+        } else if (testPlaying) {
+            smoothTestPresentation(authoritativePos, state)
+        } else {
+            resetTestPresentation(authoritativePos)
+            authoritativePos
+        }
         val barBeat = ScoreNavigator.barBeatAt(localScore, pos)
         val now = ScoreNavigator.soundingNotes(localScore, visibleNotes, pos)
         val next = ScoreNavigator.nextNotes(localScore, visibleNotes, pos)
 
         // Tempo map (spec §26): update the native expected BPM only when the
         // transport crosses a tempo region — not on every frame.
-        val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, pos)
+        val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, if (scoreScrubActive) scoreScrubPosition else authoritativePos)
         if (!scoreScrubActive && abs(regionBpm - expectedBpm) > 0.5) {
             expectedBpm = regionBpm
             if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm)
@@ -365,6 +381,36 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         } else {
             getString(R.string.start_listening)
         }
+    }
+
+    private fun smoothTestPresentation(authoritativePos: Double, state: TransportSnapshot): Double {
+        val now = System.nanoTime()
+        val elapsed = if (lastPresentationNanos == 0L) 0.0 else
+            ((now - lastPresentationNanos).coerceAtLeast(0L) / 1_000_000_000.0).coerceAtMost(0.25)
+        val discontinuity = lastPresentationNanos == 0L ||
+            lastNativeRunning != state.running || lastPositionState != state.positionState ||
+            abs(authoritativePos - lastNativePosition) > 2.0
+        if (discontinuity || testAudioPlayer.state == TestAudioPlayer.State.Paused) {
+            smoothedTestPosition = authoritativePos
+        } else {
+            val bpm = if (state.transportBpm > 1.0) state.transportBpm else expectedBpm
+            val maxStep = bpm / 60.0 * elapsed * 1.5
+            val delta = authoritativePos - smoothedTestPosition
+            smoothedTestPosition += delta.coerceIn(-maxStep, maxStep)
+        }
+        lastNativePosition = authoritativePos
+        lastNativeRunning = state.running
+        lastPositionState = state.positionState
+        lastPresentationNanos = now
+        return smoothedTestPosition
+    }
+
+    private fun resetTestPresentation(authoritativePos: Double) {
+        smoothedTestPosition = authoritativePos
+        lastNativePosition = authoritativePos
+        lastNativeRunning = false
+        lastPositionState = null
+        lastPresentationNanos = 0L
     }
 
     private fun showSettingsMenu() {
