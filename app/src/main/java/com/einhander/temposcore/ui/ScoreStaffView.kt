@@ -157,19 +157,41 @@ class ScoreStaffView @JvmOverloads constructor(
         val futureWindow = 8.0
         val minBeat = quarterBeatPosition - pastWindow
         val maxBeat = quarterBeatPosition + futureWindow
-        val notesToDraw = localScore.visibleNotes(trackSelection).asSequence()
+        val visibleNotes = localScore.visibleNotes(trackSelection).asSequence()
             .filter {
                 val beat = localScore.noteStartBeat(it)
                 beat in minBeat..maxBeat
             }
+            .toList()
+        val labelSize = max(16f, 14f * resources.displayMetrics.scaledDensity)
+        val labelGap = max(4f, 3f * resources.displayMetrics.density)
+        val obstaclePadding = max(3f, 2f * resources.displayMetrics.density)
+        noteLabelPaint.textSize = labelSize
+        val updatedFontMetrics = noteLabelPaint.fontMetrics
+        val minBaseline = max(0f, -updatedFontMetrics.top + labelGap)
+        val stemHeight = lineGap * 1.7f
+        val noteTop = max(
+            24f,
+            stemHeight + obstaclePadding + labelGap * 2f +
+                updatedFontMetrics.bottom - updatedFontMetrics.top + 4f,
+        )
+        val noteBottom = max(noteTop, h - 7f - obstaclePadding - 4f)
+        val pitchMin = visibleNotes.minOfOrNull { it.pitch } ?: 64
+        val pitchMax = visibleNotes.maxOfOrNull { it.pitch } ?: 64
+        val pitchRange = (pitchMax - pitchMin).coerceAtLeast(1)
+        val verticalRange = (noteBottom - noteTop).coerceAtLeast(1f)
+        val notesToDraw = visibleNotes
             .map { note ->
                 val startBeat = localScore.noteStartBeat(note)
                 val x = cursorX + ((startBeat - quarterBeatPosition) * pixelsPerQuarterBeat).toFloat()
-                val semitoneStep = lineGap / 3.5f
-                val y = staffCenter - (note.pitch - 64) * semitoneStep
+                // Fit visible pitch range into viewport while preserving pitch ordering.
+                val y = if (pitchMax == pitchMin) {
+                    staffCenter.coerceIn(noteTop, noteBottom)
+                } else {
+                    noteTop + (pitchMax - note.pitch) * verticalRange / pitchRange
+                }
                 Triple(note, x, y)
             }
-            .toList()
 
         notesToDraw.forEach { (note, x, y) ->
             val startBeat = localScore.noteStartBeat(note)
@@ -180,13 +202,7 @@ class ScoreStaffView @JvmOverloads constructor(
         }
 
         if (notesToDraw.isNotEmpty()) {
-            val labelSize = max(16f, 14f * resources.displayMetrics.scaledDensity)
-            val labelGap = max(4f, 3f * resources.displayMetrics.density)
-            val obstaclePadding = max(3f, 2f * resources.displayMetrics.density)
             val placedLabels = ArrayList<LabelBounds>(notesToDraw.size)
-            noteLabelPaint.textSize = labelSize
-            val updatedFontMetrics = noteLabelPaint.fontMetrics
-            val minBaseline = max(0f, -updatedFontMetrics.top + labelGap)
 
             fun overlaps(left: Float, top: Float, right: Float, bottom: Float,
                 otherLeft: Float, otherTop: Float, otherRight: Float, otherBottom: Float,

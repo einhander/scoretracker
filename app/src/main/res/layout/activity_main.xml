@@ -3,9 +3,13 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="16dp"
+    android:paddingStart="12dp"
+    android:paddingTop="10dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="8dp"
     android:background="@color/surface">
 
+    <!-- Primary transport actions stay above the fold. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -17,15 +21,23 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
             android:text="@string/load_midi" />
 
         <Button
             android:id="@+id/listenButton"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
             android:layout_marginStart="8dp"
+            android:layout_weight="1"
             android:enabled="false"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
             android:text="@string/start_listening" />
 
         <Button
@@ -33,13 +45,17 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
             android:text="@string/settings" />
     </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="2dp"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
@@ -48,6 +64,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:enabled="false"
+            android:minHeight="40dp"
             android:text="@string/reset_position" />
 
         <TextView
@@ -55,184 +72,243 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_gravity="center_vertical"
-            android:layout_marginStart="12dp"
+            android:layout_marginStart="10dp"
             android:ellipsize="middle"
             android:maxLines="1"
             android:text="@string/no_midi"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <LinearLayout
-        android:id="@+id/testControlsContainer"
+    <!-- Fixed protected staff canvas; remaining space belongs to scrollable secondary tools. -->
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone">
+        android:layout_height="260dp"
+        android:layout_marginTop="6dp"
+        android:background="@color/white"
+        android:elevation="2dp">
 
-        <LinearLayout
-            android:id="@+id/testControlsRow"
+        <com.einhander.temposcore.ui.ScoreStaffView
+            android:id="@+id/scoreView"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:layout_height="match_parent"
+            android:contentDescription="@string/score_preview" />
+    </FrameLayout>
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:text="@string/test_mode"
-            android:textStyle="bold" />
-
-        <Button
-            android:id="@+id/loadTestAudioButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/load_test_audio" />
-
-        <Button
-            android:id="@+id/testPlayPauseButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:enabled="false"
-            android:text="@string/test_play" />
-
-        <Button
-            android:id="@+id/testRestartButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:enabled="false"
-            android:text="@string/test_restart" />
-
-        <Button
-            android:id="@+id/testStopButton"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
-            android:enabled="false"
-            android:text="@string/test_stop" />
-
-        <TextView
-            android:id="@+id/testAudioNameText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:ellipsize="middle"
-            android:maxLines="1"
-            android:text="@string/no_test_audio" />
-
-        <TextView
-            android:id="@+id/testTimeText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="0:00 / 0:00" />
-        </LinearLayout>
-
-        <SeekBar
-            android:id="@+id/testSeekBar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:enabled="false"
-            android:max="1000" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:id="@+id/trackSelectorRow"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal"
-        android:visibility="gone">
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center_vertical"
-            android:layout_marginEnd="8dp"
-            android:text="@string/track_label"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-
-        <Spinner
-            android:id="@+id/trackSpinner"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
-
-        <TextView
-            android:id="@+id/tempoText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="MIDI 120.0  |  LIVE --.- BPM"
-            android:textSize="18sp" />
-
-        <TextView
-            android:id="@+id/positionText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Bar 1  Beat 1.00"
-            android:textSize="18sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <com.einhander.temposcore.ui.ScoreStaffView
-        android:id="@+id/scoreView"
+    <!-- Secondary status, track, and test tools scroll instead of shrinking staff. -->
+    <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp"
-        android:background="@color/white" />
+        android:layout_marginTop="6dp"
+        android:fillViewport="false"
+        android:overScrollMode="ifContentScrolls">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
-        android:orientation="horizontal">
-
-        <TextView
-            android:id="@+id/nowText"
-            android:layout_width="0dp"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Now: —"
-            android:textSize="17sp" />
+            android:orientation="vertical"
+            android:paddingBottom="8dp">
 
-        <TextView
-            android:id="@+id/nextText"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Next: —"
-            android:textSize="17sp" />
+            <LinearLayout
+                android:id="@+id/trackSelectorRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
 
-        <TextView
-            android:id="@+id/confidenceText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Confidence: 0%"
-            android:textSize="15sp" />
-    </LinearLayout>
+                <TextView
+                    android:id="@+id/trackLabelText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:labelFor="@id/trackSpinner"
+                    android:text="@string/track_label"
+                    android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/positionStatusText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:text="Position: —"
-        android:textSize="15sp"
-        android:textStyle="bold" />
+                <Spinner
+                    android:id="@+id/trackSpinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+            </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tempoText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="MIDI 120.0  |  LIVE --.- BPM"
+                    android:textSize="16sp" />
+
+                <TextView
+                    android:id="@+id/positionText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Bar 1  Beat 1.00"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/nowText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Now: —"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/nextText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Next: —"
+                    android:textSize="15sp" />
+
+                <TextView
+                    android:id="@+id/confidenceText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="Beat: 0%"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/positionStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="Position: —"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/testControlsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="vertical"
+                android:padding="8dp"
+                android:background="@color/surface_alt"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:id="@+id/testControlsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="8dp"
+                        android:text="@string/test_mode"
+                        android:textStyle="bold" />
+
+                    <Button
+                        android:id="@+id/loadTestAudioButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:minHeight="40dp"
+                        android:text="@string/load_test_audio" />
+
+                    <TextView
+                        android:id="@+id/testAudioNameText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:layout_marginStart="8dp"
+                        android:ellipsize="middle"
+                        android:maxLines="1"
+                        android:text="@string/no_test_audio" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/testPlayPauseButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:minHeight="40dp"
+                        android:text="@string/test_play" />
+
+                    <Button
+                        android:id="@+id/testRestartButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:minHeight="40dp"
+                        android:text="@string/test_restart" />
+
+                    <Button
+                        android:id="@+id/testStopButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="4dp"
+                        android:layout_weight="1"
+                        android:enabled="false"
+                        android:minHeight="40dp"
+                        android:text="@string/test_stop" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <SeekBar
+                        android:id="@+id/testSeekBar"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:contentDescription="@string/test_seek_description"
+                        android:enabled="false"
+                        android:max="1000" />
+
+                    <TextView
+                        android:id="@+id/testTimeText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="0:00 / 0:00" />
+                </LinearLayout>
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
 </LinearLayout>
