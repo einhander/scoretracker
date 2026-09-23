@@ -19,9 +19,14 @@ public:
     ~AudioAnalyzer() { stop(); }
     bool start(int32_t sampleRate, double expectedBpm);
     void setExpectedBpm(double bpm) noexcept { beatTracker_.setExpectedBpm(bpm); }
+    void requestPositionReset(bool local) noexcept {
+        resetLocal_.store(local, std::memory_order_relaxed);
+        resetRequest_.fetch_add(1, std::memory_order_release);
+    }
     void stop() noexcept; // Non-real-time only: join may block.
     uint64_t framesConsumed() const noexcept { return framesConsumed_.load(std::memory_order_relaxed); }
     uint64_t featureSequence() const noexcept { return featureSequence_.load(std::memory_order_acquire); }
+    uint64_t appliedResetEpoch() const noexcept { return appliedResetRequest_.load(std::memory_order_acquire); }
     // Callers must retry in a loop when this returns false.
     bool latestFeature(AudioFeatureFrame& out) const noexcept;
     // Wire the slow-loop score follower. Called on the main thread BEFORE start()
@@ -41,6 +46,8 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> framesConsumed_{0};
     std::atomic<uint64_t> featureSequence_{0};
+    std::atomic<uint64_t> resetRequest_{0};
+    std::atomic<bool> resetLocal_{false};
     AudioFeatureFrame latestFeature_{};
     std::unique_ptr<Stft> stft_;
     std::unique_ptr<ChromaExtractor> chroma_;
@@ -51,5 +58,9 @@ private:
     PositionMatcher* matcher_ = nullptr;
     LiveTransport* transport_ = nullptr;
     int64_t lastMatcherCenter_ = 0; // last feature center (samples) the matcher ran
+    std::atomic<uint64_t> appliedResetRequest_{0};
+    size_t freshFeatureFrames_ = 0;
+    int32_t sampleRate_ = 48000;
+    double expectedBpm_ = 120.0;
 };
 }

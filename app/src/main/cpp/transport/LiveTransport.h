@@ -41,6 +41,9 @@ public:
     void submitTempoObservation(const BeatObservation& observation) noexcept;
     void processFrames(int32_t numFrames, int32_t sampleRate) noexcept;
     TransportState snapshot() const noexcept;
+    uint64_t positionGeneration() const noexcept {
+        return positionGeneration_.load(std::memory_order_acquire);
+    }
 
 private:
     double expectedBpmRt_ = 120.0;
@@ -78,6 +81,8 @@ private:
     std::atomic<double> correctionErrorBeats_{0.0}, correctionConfidence_{0.0}, correctionAmbiguity_{0.0};
     std::atomic<bool> correctionValid_{false}, correctionGlobal_{false};
     std::atomic<uint64_t> correctionGeneration_{0};
+    // Even epoch means stable mailbox; odd means non-RT publisher is writing.
+    std::atomic<uint64_t> positionPublishEpoch_{0};
     uint64_t appliedCorrectionGeneration_ = 0;
     double remainingPositionErrorRt_ = 0.0;
 };

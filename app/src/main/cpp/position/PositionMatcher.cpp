@@ -49,21 +49,24 @@ PositionObservation PositionMatcher::trackLocal(const FeatureRing& f, double pre
     o.state = state_;
     return o;
 }
-PositionObservation PositionMatcher::update(const FeatureRing& f, double predicted) noexcept {
+PositionObservation PositionMatcher::update(const FeatureRing& f, double predicted,
+                                            uint64_t generation) noexcept {
     if (state_ == PositionTrackingState::Idle) begin();
     // Main-thread requests are applied here, on the analyzer thread only.
     // A manual scrub keeps the user's chosen neighbourhood authoritative and
     // resumes with local DTW; Reset/test seek still asks for a global search.
     if (localReacquireRequested_.exchange(false, std::memory_order_acquire)) {
-        state_ = PositionTrackingState::Locked;
-        stable_ = 1;
+        state_ = PositionTrackingState::Reacquiring;
+        localReacquiring_ = true;
+        stable_ = 0;
         weakStreak_ = 0;
         hasLast_ = false;
     } else if (reacquireRequested_.exchange(false, std::memory_order_acquire)) {
         begin();
     }
     PositionObservation o;
-    if (state_ == PositionTrackingState::Locked || state_ == PositionTrackingState::Weak) {
+    if (state_ == PositionTrackingState::Locked || state_ == PositionTrackingState::Weak ||
+        (state_ == PositionTrackingState::Reacquiring && localReacquiring_)) {
         const double radius = (state_ == PositionTrackingState::Weak) ? kLocalRadiusWide : kLocalRadius;
         o = trackLocal(f, predicted, radius);
     } else {
@@ -86,11 +89,15 @@ PositionObservation PositionMatcher::update(const FeatureRing& f, double predict
             // Acquiring / Reacquiring: initial global lock.
             const bool veryStrongUnique = (conf >= kRelocate) && (o.ambiguityMargin > 0.2f);
             const bool twoConsecutive = (stable_ >= 1) && agrees;
-            if (veryStrongUnique || twoConsecutive) {
+            if (!localReacquiring_ && (veryStrongUnique || twoConsecutive)) {
                 state_ = PositionTrackingState::Locked;
                 stable_ = veryStrongUnique ? 1 : 2;
             } else {
                 stable_ = agrees ? stable_ + 1 : 0;
+                if (localReacquiring_ && stable_ >= 2 && veryStrongUnique) {
+                    state_ = PositionTrackingState::Locked;
+                    localReacquiring_ = false;
+                }
             }
         }
     } else if (conf < kWeakExit) {
@@ -117,6 +124,8 @@ PositionObservation PositionMatcher::update(const FeatureRing& f, double predict
         hasLast_ = true;
     }
     o.state = state_;
+    if (localReacquiring_) o.valid = false;
+    o.resetGeneration = generation;
     return o;
 }
 }

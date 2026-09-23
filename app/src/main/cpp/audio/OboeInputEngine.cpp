@@ -106,10 +106,12 @@ void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
 }
 
 void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
+    analyzer_.requestPositionReset(false);
     transport_.resetPosition(startQuarterBeat);
 }
 
 void OboeInputEngine::setManualPosition(double startQuarterBeat) noexcept {
+    analyzer_.requestPositionReset(true);
     transport_.resetPosition(startQuarterBeat);
     if (matcher_) matcher_->requestLocalReacquire();
 }

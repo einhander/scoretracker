@@ -2,6 +2,7 @@
 #include "position/FeatureRing.h"
 #include "position/ScoreReference.h"
 #include <array>
+#include <cstdint>
 namespace temposcore {
 enum class PositionTrackingState { Idle, Acquiring, Locked, Weak, Reacquiring };
 struct PositionObservation {
@@ -9,6 +10,7 @@ struct PositionObservation {
     float matchQuality = 0, confidence = 0, ambiguityMargin = 0;
     bool valid = false, globalMatch = false;
     PositionTrackingState state = PositionTrackingState::Idle;
+    uint64_t resetGeneration = 0;
 };
 class DtwMatcher final {
 public:

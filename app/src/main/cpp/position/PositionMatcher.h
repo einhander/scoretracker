@@ -16,6 +16,7 @@ public:
         stable_ = 0;
         weakStreak_ = 0;
         hasLast_ = false;
+        localReacquiring_ = false;
     }
     // Request a global re-acquisition from the main thread (JNI). The analyzer
     // thread applies it on its next update() (no cross-thread state write).
@@ -29,7 +30,12 @@ public:
         reacquireRequested_.store(false, std::memory_order_release);
         localReacquireRequested_.store(true, std::memory_order_release);
     }
-    PositionObservation update(const FeatureRing& f, double predicted = 0.0) noexcept;
+    void resetCadence() noexcept {
+        begin();
+        localReacquireRequested_.store(false, std::memory_order_relaxed);
+    }
+    PositionObservation update(const FeatureRing& f, double predicted = 0.0,
+                               uint64_t generation = 0) noexcept;
     PositionTrackingState state() const noexcept { return state_; }
 private:
     // Coarse (0.5 s step) chroma pre-filter -> top-K=8 -> fine DTW.
@@ -52,6 +58,7 @@ private:
     double lastPosition_ = 0.0;
     double lastPredicted_ = 0.0;
     bool hasLast_ = false;
+    bool localReacquiring_ = false;
 
     static constexpr float kLock = 0.80f;        // enter Locked
     static constexpr float kRelocate = 0.88f;    // allow a hard relocation / initial lock

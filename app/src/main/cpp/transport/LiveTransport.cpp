@@ -25,10 +25,19 @@ void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexc
 }
 
 void LiveTransport::resetPosition(double startQuarterBeat) noexcept {
+    uint64_t epoch = positionPublishEpoch_.load(std::memory_order_relaxed);
+    while ((epoch & 1U) || !positionPublishEpoch_.compare_exchange_weak(epoch, epoch + 1)) {}
     const double clamped = std::max(0.0, startQuarterBeat);
     requestedPosition_.store(clamped, std::memory_order_relaxed);
     publishedPosition_.store(clamped, std::memory_order_relaxed);
     positionGeneration_.fetch_add(1, std::memory_order_release);
+    correctionValid_.store(false, std::memory_order_release);
+    correctionErrorBeats_.store(0.0, std::memory_order_relaxed);
+    correctionGeneration_.fetch_add(1, std::memory_order_release);
+    publishedPositionConfidence_.store(0.0, std::memory_order_relaxed);
+    publishedPositionError_.store(0.0, std::memory_order_relaxed);
+    publishedPositionState_.store(0, std::memory_order_relaxed);
+    positionPublishEpoch_.store(epoch + 2, std::memory_order_release);
 }
 
 void LiveTransport::setExpectedBpm(double expectedBpm) noexcept {
@@ -64,6 +73,16 @@ void LiveTransport::publishIdle() noexcept {
 }
 
 void LiveTransport::submitPositionObservation(const PositionObservation&o, double validContextSeconds) noexcept {
+    // Generation zero preserves host callers built before epoch stamping; all
+    // analyzer-produced observations carry a non-zero current generation.
+    const uint64_t currentGeneration = positionGeneration_.load(std::memory_order_acquire);
+    if (o.resetGeneration != 0 && o.resetGeneration != currentGeneration) return;
+    uint64_t epoch = positionPublishEpoch_.load(std::memory_order_relaxed);
+    while ((epoch & 1U) || !positionPublishEpoch_.compare_exchange_weak(epoch, epoch + 1)) {}
+    if (o.resetGeneration != 0 && o.resetGeneration != positionGeneration_.load(std::memory_order_acquire)) {
+        positionPublishEpoch_.store(epoch + 2, std::memory_order_release);
+        return;
+    }
     // Always publish the latest score-following state (even when the match is
     // not confident enough to set a correction target), so the UI can show the
     // current state / "locating" progress.
@@ -88,6 +107,7 @@ void LiveTransport::submitPositionObservation(const PositionObservation&o, doubl
     correctionGlobal_.store(o.globalMatch,std::memory_order_relaxed);
     correctionValid_.store(o.valid,std::memory_order_relaxed);
     correctionGeneration_.fetch_add(1,std::memory_order_release);
+    positionPublishEpoch_.store(epoch + 2, std::memory_order_release);
 }
 
 void LiveTransport::submitTempoObservation(const BeatObservation& observation) noexcept {
@@ -146,14 +166,27 @@ void LiveTransport::processFrames(int32_t numFrames, int32_t sampleRate) noexcep
     const uint64_t correctionGeneration = correctionGeneration_.load(std::memory_order_acquire);
     if (correctionGeneration != appliedCorrectionGeneration_) {
         appliedCorrectionGeneration_ = correctionGeneration;
-        const bool corrValid = correctionValid_.load(std::memory_order_relaxed);
+        bool corrValid = false;
+        double error = 0.0, conf = 0.0, ambig = 0.0;
+        bool isGlobal = false;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            const uint64_t before = positionPublishEpoch_.load(std::memory_order_acquire);
+            const uint64_t generationBefore = positionGeneration_.load(std::memory_order_acquire);
+            if (before & 1U) continue;
+            corrValid = correctionValid_.load(std::memory_order_relaxed);
+            error = correctionErrorBeats_.load(std::memory_order_relaxed);
+            conf = correctionConfidence_.load(std::memory_order_relaxed);
+            ambig = correctionAmbiguity_.load(std::memory_order_relaxed);
+            isGlobal = correctionGlobal_.load(std::memory_order_relaxed);
+            const uint64_t after = positionPublishEpoch_.load(std::memory_order_acquire);
+            corrValid = corrValid && before == after && !(after & 1U) &&
+                        generationBefore == positionGeneration_.load(std::memory_order_acquire);
+            if (before == after) break;
+            corrValid = false;
+        }
         if (!corrValid) {
             remainingPositionErrorRt_ = 0.0;
         } else {
-            const double error = correctionErrorBeats_.load(std::memory_order_relaxed);
-            const double conf = correctionConfidence_.load(std::memory_order_relaxed);
-            const double ambig = correctionAmbiguity_.load(std::memory_order_relaxed);
-            const bool isGlobal = correctionGlobal_.load(std::memory_order_relaxed);
             const double a = std::abs(error);
             // ambiguityMargin is second-best minus best: LARGER means more unique.
             const bool unique = ambig >= .05;
