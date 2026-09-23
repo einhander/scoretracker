@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         applyTestModeVisibility()
 
         binding.settingsButton.setOnClickListener { showSettingsMenu() }
+        binding.testModeButton.setOnClickListener { setTestModeVisible(!showTestMode) }
 
         binding.scoreView.onPositionScrubStart = { position ->
             scoreScrubActive = true
@@ -382,11 +383,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
                 MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
                 MENU_SHOW_TEST_MODE -> {
-                    showTestMode = !showTestMode
-                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                        .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
-                    if (!showTestMode) testAudioPlayer.stop()
-                    applyTestModeVisibility()
+                    setTestModeVisible(!showTestMode)
                     true
                 }
                 else -> false
@@ -407,6 +404,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun applyTestModeVisibility() {
         binding.testControlsContainer.visibility = if (showTestMode) View.VISIBLE else View.GONE
+        binding.testModeButton.text = getString(
+            if (showTestMode) R.string.hide_test_mode else R.string.test_mode,
+        )
+        binding.testModeButton.isSelected = showTestMode
+    }
+
+    private fun setTestModeVisible(visible: Boolean) {
+        showTestMode = visible
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
+        if (!showTestMode) testAudioPlayer.stop()
+        applyTestModeVisibility()
     }
 
     private fun loadTestAudio(uri: Uri) {
