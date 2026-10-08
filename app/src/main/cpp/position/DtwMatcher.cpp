@@ -86,7 +86,7 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
     struct Cand { float cost; size_t s; size_t current; };
     std::array<Cand, 16> top{};
     size_t topN = 0;
-    const double liveSpanSeconds = n > 1 ? static_cast<double>(n - 1) / 10.0 : 0.0;
+    const double liveSpanSeconds = l.durationSeconds();
     const double hypothesisSeparationSeconds = std::max(2.0, std::min(8.0, 0.8 * liveSpanSeconds));
     auto consider = [&](float cost, size_t s, size_t current) {
         // Collapse neighbouring alignments of the same physical match.  The

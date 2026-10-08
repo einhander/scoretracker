@@ -39,6 +39,7 @@ if(NOT ANDROID)
     enable_testing()
     set(TEMPOSCORE_HOST_TEST_SOURCES
         audio/SpscAudioRing.cpp
+        audio/AudioAnalyzer.cpp
         dsp/Fft.cpp
         dsp/Stft.cpp
         dsp/Chroma.cpp
@@ -59,8 +60,16 @@ if(NOT ANDROID)
         tests/host/test_position.cpp
         tests/host/test_position_matcher.cpp
         tests/host/test_beat_tracker.cpp
+        tests/host/test_feature_grid_timing.cpp
     )
     add_executable(temposcore_host_tests ${TEMPOSCORE_HOST_TEST_SOURCES})
     target_include_directories(temposcore_host_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME host_tests COMMAND temposcore_host_tests)
+
+    add_executable(temposcore_feature_grid_evidence
+        tests/host/feature_grid_evidence.cpp
+        dsp/Fft.cpp
+        dsp/Stft.cpp
+    )
+    target_include_directories(temposcore_feature_grid_evidence PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

@@ -19,6 +19,10 @@ public:
     size_t write(const float* data, size_t n) noexcept;
     size_t read(float* out, size_t n) noexcept;
     size_t available() const noexcept;
+    // Clamp an observational (possibly stale-tail/new-head) snapshot to the
+    // ring's physical capacity; exposed for deterministic invariant tests.
+    static size_t boundedAvailableSnapshot(uint64_t observedTail, uint64_t observedHead,
+                                           size_t capacity) noexcept;
     size_t capacity() const noexcept { return capacity_; }
     uint64_t droppedSamples() const noexcept { return droppedSamples_.load(std::memory_order_relaxed); }
     void reset() noexcept;

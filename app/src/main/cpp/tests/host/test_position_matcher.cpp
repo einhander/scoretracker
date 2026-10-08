@@ -40,18 +40,25 @@ static ScoreReference makeRepeatRef() {
 }
 static FeatureRing makeLiveFrom(const ScoreReference& r, size_t start, size_t count) {
     FeatureRing q;
+    q.setSampleRate(48000);
     for (size_t i = start; i < start + count && i < r.frames().size(); ++i) {
         AudioFeatureFrame f;
         f.valid = true;
         f.chroma = r.frames()[i].chroma;
         f.onset = r.frames()[i].onset;
+        f.centerAudioFrame = static_cast<int64_t>(i - start) * 4800;
         q.push(f);
     }
     return q;
 }
 static FeatureRing makeSilent(size_t count) {
     FeatureRing q;
-    for (size_t i = 0; i < count; ++i) q.push(AudioFeatureFrame{});
+    q.setSampleRate(48000);
+    for (size_t i = 0; i < count; ++i) {
+        AudioFeatureFrame frame;
+        frame.centerAudioFrame = static_cast<int64_t>(i) * 4800;
+        q.push(frame);
+    }
     return q;
 }
 static BeatObservation silentBeat() {

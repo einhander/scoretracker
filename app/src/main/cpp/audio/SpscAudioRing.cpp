@@ -29,7 +29,18 @@ size_t SpscAudioRing::read(float* out, size_t n) noexcept {
 }
 
 size_t SpscAudioRing::available() const noexcept {
-    return head_.load(std::memory_order_acquire) - tail_.load(std::memory_order_acquire);
+    // Consumer owns tail, producer owns head. Read tail first so the subsequent
+    // head observation cannot precede the consumer's tail publication; a racing
+    // producer can still make this stale-tail snapshot overstate occupancy.
+    const uint64_t tail = tail_.load(std::memory_order_acquire);
+    const uint64_t head = head_.load(std::memory_order_acquire);
+    return boundedAvailableSnapshot(tail, head, capacity_);
+}
+
+size_t SpscAudioRing::boundedAvailableSnapshot(uint64_t observedTail, uint64_t observedHead,
+                                               size_t capacity) noexcept {
+    if (observedHead <= observedTail) return 0;
+    return static_cast<size_t>(std::min<uint64_t>(observedHead - observedTail, capacity));
 }
 
 void SpscAudioRing::reset() noexcept {
