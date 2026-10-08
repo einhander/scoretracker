@@ -72,6 +72,24 @@ static BeatObservation silentBeat() {
     return b;
 }
 
+static void submitStampedOffset(LiveTransport& transport, double offset, float confidence,
+                                float ambiguity, bool globalMatch = false) {
+    transport.processFrames(480, 48000); // source frames [0, 480), now has historical anchor.
+    PositionObservation observation;
+    observation.quarterBeatPosition = transport.snapshot().quarterBeatPosition + offset;
+    observation.confidence = confidence;
+    observation.ambiguityMargin = ambiguity;
+    observation.valid = true;
+    observation.globalMatch = globalMatch;
+    observation.state = PositionTrackingState::Locked;
+    observation.resetGeneration = transport.positionGeneration();
+    observation.streamEpoch = 1;
+    observation.continuityEpoch = 1;
+    observation.observationFrame = 480;
+    observation.sequence = 1;
+    transport.submitPositionObservation(observation, 2.0);
+}
+
 // (a) Acquiring -> Locked on a strong unique match (60-frame window, full fill).
 void test_matcher_acquire_lock() {
     auto r = makeUniqueRef();
@@ -138,30 +156,18 @@ void test_matcher_ambiguous_no_jump() {
 void test_transport_small_direct() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 10.3;
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.5f;
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 0.3, 0.9f, 0.5f);
     t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
-    CHECK(pos > 10.2);
-    CHECK(pos < 10.6);
+    CHECK(pos > 10.02);
+    CHECK(pos < 10.10); // Small phase correction is bounded, never an instant snap.
 }
 
 // (e2) Medium error (0.5-4 beats) slewed (rate-limited, not a snap).
 void test_transport_medium_slew() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 13.0; // error ~3 beats
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.5f;
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 3.0, 0.9f, 0.5f);
     t.processFrames(480, 48000); // 10 ms
     const double pos = t.snapshot().quarterBeatPosition;
     // Slew is rate-limited: only a small step in 10 ms, not the full 3 beats.
@@ -176,13 +182,7 @@ void test_transport_medium_slew() {
 void test_transport_slew_converges() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 13.0; // error ~3 beats
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.5f;
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 3.0, 0.9f, 0.5f);
     for (int i = 0; i < 150; ++i) t.processFrames(480, 48000); // ~1.5 s
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 12.0); // converged toward the target (13.0)
@@ -193,13 +193,7 @@ void test_transport_slew_converges() {
 void test_transport_large_ambiguous_no_jump() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 20.0; // error ~10 beats
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.02f; // ambiguous: best and second-best are nearly tied
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 10.0, 0.9f, 0.02f); // ambiguous, no relocation
     t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos < 12.0); // did not jump to 20
@@ -209,13 +203,7 @@ void test_transport_large_ambiguous_no_jump() {
 void test_transport_large_strong_applied() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 20.0; // error ~10 beats
-    o.confidence = 0.95f; // strong (>= 0.88)
-    o.ambiguityMargin = 0.20f; // unique: clear best-vs-second margin
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 10.0, 0.95f, 0.20f);
     t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0); // jumped to ~20
@@ -225,13 +213,7 @@ void test_transport_large_strong_applied() {
 void test_transport_global_lock_applied() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 20.0;
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.3f; // unique enough for initial global relocation
-    o.valid = true;
-    o.globalMatch = true; // ...it is the initial global lock
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 10.0, 0.9f, 0.3f, true);
     t.processFrames(480, 48000);
     const double pos = t.snapshot().quarterBeatPosition;
     CHECK(pos > 18.0);
@@ -245,13 +227,7 @@ void test_transport_global_lock_applied() {
 void test_transport_offset_slew_keeps_advancing() {
     LiveTransport t;
     t.configure(120.0, 10.0);
-    PositionObservation o;
-    o.quarterBeatPosition = 13.0;
-    o.confidence = 0.9f;
-    o.ambiguityMargin = 0.5f;
-    o.valid = true;
-    o.globalMatch = false;
-    t.submitPositionObservation(o, 10.0);
+    submitStampedOffset(t, 3.0, 0.9f, 0.5f);
     for (int i = 0; i < 400; ++i) t.processFrames(480, 48000); // 4 s
     CHECK(t.snapshot().quarterBeatPosition > 19.0);
 }

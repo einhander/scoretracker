@@ -20,28 +20,33 @@ Java_com_einhander_temposcore_NativeAudioBridge_start(JNIEnv*, jobject) {
 }
 
 
-extern "C" JNIEXPORT jboolean JNICALL
+extern "C" JNIEXPORT jlong JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_startTest(
-        JNIEnv*, jobject, jint sampleRate) {
-    return gEngine.startTest(sampleRate) ? JNI_TRUE : JNI_FALSE;
+        JNIEnv*, jobject, jint sampleRate, jlong sessionToken) {
+    return static_cast<jlong>(gEngine.startTest(sampleRate, static_cast<uint64_t>(sessionToken)));
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_pushTestAudio(
-        JNIEnv* env, jobject, jfloatArray samples) {
-    if (samples == nullptr) return;
+        JNIEnv* env, jobject, jlong sessionToken, jfloatArray samples) {
+    if (sessionToken == 0 || samples == nullptr ||
+        !gEngine.testSessionActive(static_cast<uint64_t>(sessionToken))) return;
     const jsize n = env->GetArrayLength(samples);
     if (n <= 0) return;
     jboolean isCopy = JNI_FALSE;
     jfloat* data = env->GetFloatArrayElements(samples, &isCopy);
     if (data == nullptr) return;
-    gEngine.pushTestAudio(data, static_cast<size_t>(n));
+    gEngine.pushTestAudio(static_cast<uint64_t>(sessionToken), data, static_cast<size_t>(n));
     env->ReleaseFloatArrayElements(samples, data, JNI_ABORT);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_einhander_temposcore_NativeAudioBridge_stopTest(JNIEnv*, jobject) {
-    gEngine.stop();
+Java_com_einhander_temposcore_NativeAudioBridge_stopTest(JNIEnv*, jobject, jlong sessionToken) {
+    gEngine.stopTest(static_cast<uint64_t>(sessionToken));
+}
+extern "C" JNIEXPORT void JNICALL
+Java_com_einhander_temposcore_NativeAudioBridge_revokeTestSession(JNIEnv*, jobject, jlong sessionToken) {
+    gEngine.revokeTestSession(static_cast<uint64_t>(sessionToken));
 }
 extern "C" JNIEXPORT void JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_stop(JNIEnv*, jobject) {

@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import java.nio.ByteOrder
+import java.util.Collections
 import kotlin.math.max
 
 /**
@@ -27,6 +28,14 @@ class TestAudioPlayer(
     private val context: Context,
     private val listener: Listener,
 ) {
+    private class PlaybackRun(val uri: Uri, val startUs: Long, val sessionToken: Long) {
+        val pauseLock = Object()
+        @Volatile var stopRequested = false
+        @Volatile var paused = false
+        @Volatile var thread: Thread? = null
+        @Volatile var audioTrack: AudioTrack? = null
+    }
+
     interface Listener {
         fun onTestAudioStateChanged(state: State)
         fun onTestAudioProgress(positionMs: Long, durationMs: Long)
@@ -43,12 +52,11 @@ class TestAudioPlayer(
         private set
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val pauseLock = Object()
+    private val playbackLock = Any()
+    private val retiredRuns = Collections.newSetFromMap(java.util.IdentityHashMap<PlaybackRun, Boolean>())
     @Volatile private var sourceUri: Uri? = null
-    @Volatile private var stopRequested = false
-    @Volatile private var paused = false
-    @Volatile private var playbackThread: Thread? = null
-    @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var activeRun: PlaybackRun? = null
+    @Volatile private var latestPlaybackToken = 0L
     @Volatile private var nextStartUs = 0L
 
     fun load(uri: Uri) {
@@ -105,67 +113,89 @@ class TestAudioPlayer(
     }
 
     private fun pause() {
-        if (state != State.Playing) return
-        paused = true
-        try { audioTrack?.pause() } catch (_: IllegalStateException) { }
+        synchronized(playbackLock) {
+            if (state != State.Playing) return
+            val current = activeRun ?: return
+            current.paused = true
+            try { current.audioTrack?.pause() } catch (_: IllegalStateException) { }
+        }
         publishState(State.Paused)
     }
 
     private fun resume() {
-        if (state != State.Paused) return
-        paused = false
-        try { audioTrack?.play() } catch (_: IllegalStateException) { }
-        synchronized(pauseLock) { pauseLock.notifyAll() }
+        val run = synchronized(playbackLock) {
+            if (state != State.Paused) return
+            val current = activeRun ?: return
+            current.paused = false
+            try { current.audioTrack?.play() } catch (_: IllegalStateException) { }
+            current
+        }
+        synchronized(run.pauseLock) { run.pauseLock.notifyAll() }
         publishState(State.Playing)
     }
 
     private fun startSession(startUs: Long) {
         val uri = sourceUri ?: return
-        if (playbackThread?.isAlive == true) return
-        stopRequested = false
-        paused = false
-        val thread = Thread({ decodeAndPlay(uri, startUs) }, "scoretracker-test-audio")
-        playbackThread = thread
+        val run = synchronized(playbackLock) {
+            if (activeRun?.thread?.isAlive == true) return
+            val token = NativeAudioBridge.newTestSessionToken()
+            if (token == 0L) return
+            PlaybackRun(uri, startUs, token).also { session ->
+                session.thread = Thread({ decodeAndPlay(session) }, "scoretracker-test-audio-$token")
+                activeRun = session
+                latestPlaybackToken = token
+            }
+        }
         publishState(State.Playing)
-        thread.start()
+        run.thread?.start()
     }
 
     private fun stopSession(keepReady: Boolean) {
-        val thread = playbackThread
-        if (thread != null && thread.isAlive) {
-            stopRequested = true
-            paused = false
-            synchronized(pauseLock) { pauseLock.notifyAll() }
-            try { audioTrack?.pause() } catch (_: IllegalStateException) { }
-            try { audioTrack?.flush() } catch (_: IllegalStateException) { }
-            thread.interrupt()
-            try { thread.join(1500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        val run = synchronized(playbackLock) {
+            activeRun.also {
+                activeRun = null
+                latestPlaybackToken = 0L
+            }
         }
-        playbackThread = null
-        audioTrack = null
-        stopRequested = false
-        paused = false
+        if (run != null) {
+            run.stopRequested = true
+            run.paused = false
+            synchronized(run.pauseLock) { run.pauseLock.notifyAll() }
+            try { run.audioTrack?.pause() } catch (_: IllegalStateException) { }
+            try { run.audioTrack?.flush() } catch (_: IllegalStateException) { }
+            // Revoke admission immediately; token-scoped worker cleanup may finish later.
+            NativeAudioBridge.revokeTestSession(run.sessionToken)
+            val thread = run.thread
+            if (thread != null && thread !== Thread.currentThread() && thread.isAlive) {
+                thread.interrupt()
+                try { thread.join(1500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+            }
+            synchronized(playbackLock) {
+                if (thread?.isAlive == true) retiredRuns.add(run) else retiredRuns.remove(run)
+            }
+        }
         if (keepReady && sourceUri != null) publishState(State.Ready)
     }
 
-    private fun decodeAndPlay(uri: Uri, startUs: Long) {
+    private fun decodeAndPlay(run: PlaybackRun) {
         var extractor: MediaExtractor? = null
         var codec: MediaCodec? = null
         var track: AudioTrack? = null
-        var nativeStarted = false
         try {
             val ex = MediaExtractor()
             extractor = ex
-            ex.setDataSource(context, uri, null)
+            ex.setDataSource(context, run.uri, null)
             val trackIndex = findAudioTrack(ex)
             if (trackIndex < 0) error("No audio track in selected file")
             ex.selectTrack(trackIndex)
             val inputFormat = ex.getTrackFormat(trackIndex)
             val mime = inputFormat.getString(MediaFormat.KEY_MIME) ?: error("Audio MIME is missing")
-            durationMs = if (inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
-                inputFormat.getLong(MediaFormat.KEY_DURATION) / 1000L
-            } else durationMs
-            if (startUs > 0L) ex.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            synchronized(playbackLock) {
+                if (activeRun === run && !run.stopRequested && inputFormat.containsKey(MediaFormat.KEY_DURATION)) {
+                    durationMs = inputFormat.getLong(MediaFormat.KEY_DURATION) / 1000L
+                }
+            }
+            if (run.startUs > 0L) ex.seekTo(run.startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
 
             val decoder = MediaCodec.createDecoderByType(mime)
             codec = decoder
@@ -179,9 +209,9 @@ class TestAudioPlayer(
             var outputSampleRate = 0
             var outputEncoding = AudioFormat.ENCODING_PCM_16BIT
 
-            while (!outputEos && !stopRequested) {
-                waitWhilePaused()
-                if (stopRequested) break
+            while (!outputEos && !run.stopRequested) {
+                waitWhilePaused(run)
+                if (run.stopRequested) break
 
                 if (!inputEos) {
                     val inputIndex = decoder.dequeueInputBuffer(10_000L)
@@ -198,7 +228,12 @@ class TestAudioPlayer(
                     }
                 }
 
-                when (val outputIndex = decoder.dequeueOutputBuffer(info, 10_000L)) {
+                val outputIndex = decoder.dequeueOutputBuffer(info, 10_000L)
+                if (run.stopRequested) {
+                    if (outputIndex >= 0) decoder.releaseOutputBuffer(outputIndex, false)
+                    break
+                }
+                when (outputIndex) {
                     MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                     MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         val f = decoder.outputFormat
@@ -212,16 +247,19 @@ class TestAudioPlayer(
                         }
                         val newTrack = createAudioTrack(outputSampleRate, outputChannels, outputEncoding)
                         track = newTrack
-                        audioTrack = newTrack
-                        if (!NativeAudioBridge.startTest(outputSampleRate)) {
+                        run.audioTrack = newTrack
+                        val startedSession = NativeAudioBridge.startTest(outputSampleRate, run.sessionToken)
+                        if (run.stopRequested) {
+                            if (startedSession == run.sessionToken) NativeAudioBridge.stopTest(run.sessionToken)
+                            break
+                        }
+                        if (startedSession != run.sessionToken) {
                             error("Could not start native test analyzer")
                         }
-                        nativeStarted = true
-                        // A seek/restart must prove its absolute position again. Do not
-                        // seed the matcher with the MP3 timestamp (that would hide bugs).
-                        NativeAudioBridge.resetPosition(0.0)
-                        NativeAudioBridge.requestGlobalReacquire()
-                        newTrack.play()
+                        if (!playTrackForRun(run, newTrack)) {
+                            NativeAudioBridge.stopTest(run.sessionToken)
+                            break
+                        }
                     }
                     else -> if (outputIndex >= 0) {
                         if (info.size > 0) {
@@ -234,16 +272,18 @@ class TestAudioPlayer(
                             if (outputChannels <= 0 || outputSampleRate <= 0) {
                                 error("Invalid decoder output format")
                             }
-                            waitWhilePaused()
-                            if (!stopRequested) {
+                            waitWhilePaused(run)
+                            if (!run.stopRequested) {
                                 // Blocking write is the clock for the test source: decoding is
                                 // prevented from running through the entire MP3 at CPU speed.
-                                writeAll(outputTrack, pcm)
-                                NativeAudioBridge.pushTestAudio(
+                                writeAll(run, outputTrack, pcm)
+                                if (!run.stopRequested) NativeAudioBridge.pushTestAudio(
+                                    run.sessionToken,
                                     downmixToMono(pcm, outputChannels, outputEncoding),
                                 )
-                                positionMs = info.presentationTimeUs / 1000L
-                                publishProgress()
+                                if (!run.stopRequested) {
+                                    publishProgressForRun(run, info.presentationTimeUs / 1000L)
+                                }
                             }
                         }
                         outputEos = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
@@ -252,35 +292,53 @@ class TestAudioPlayer(
                 }
             }
         } catch (t: Throwable) {
-            if (!stopRequested) {
-                mainHandler.post { listener.onTestAudioError(t.message ?: t.javaClass.simpleName) }
+            if (!run.stopRequested && activeRun === run) {
+                mainHandler.post {
+                    if (activeRun === run) listener.onTestAudioError(t.message ?: t.javaClass.simpleName)
+                }
             }
         } finally {
-            if (nativeStarted) NativeAudioBridge.stopTest()
+            NativeAudioBridge.stopTest(run.sessionToken)
             try { track?.pause() } catch (_: Throwable) { }
             try { track?.flush() } catch (_: Throwable) { }
             try { track?.release() } catch (_: Throwable) { }
-            audioTrack = null
+            run.audioTrack = null
             try { codec?.stop() } catch (_: Throwable) { }
             try { codec?.release() } catch (_: Throwable) { }
             try { extractor?.release() } catch (_: Throwable) { }
-            if (playbackThread === Thread.currentThread()) playbackThread = null
-            if (!stopRequested) {
-                nextStartUs = 0L
-                publishState(if (sourceUri != null) State.Ready else State.Empty)
+            val completedCurrentRun = synchronized(playbackLock) {
+                retiredRuns.remove(run)
+                if (activeRun === run) {
+                    activeRun = null
+                    true
+                } else false
+            }
+            if (!run.stopRequested && completedCurrentRun) {
+                synchronized(playbackLock) {
+                    if (latestPlaybackToken == run.sessionToken && activeRun == null) nextStartUs = 0L
+                }
+                publishCompletedRunState(run)
             }
         }
     }
 
-    private fun waitWhilePaused() {
-        synchronized(pauseLock) {
-            while (paused && !stopRequested) {
-                try { pauseLock.wait(250L) } catch (_: InterruptedException) {
-                    if (stopRequested) return
+    private fun waitWhilePaused(run: PlaybackRun) {
+        synchronized(run.pauseLock) {
+            while (run.paused && !run.stopRequested) {
+                try { run.pauseLock.wait(250L) } catch (_: InterruptedException) {
+                    if (run.stopRequested) return
                 }
             }
         }
     }
+
+    /** Serialize play-start with stopSession's active-run invalidation. */
+    private fun playTrackForRun(run: PlaybackRun, track: AudioTrack): Boolean =
+        synchronized(playbackLock) {
+            if (activeRun !== run || run.stopRequested) return@synchronized false
+            try { track.play() } catch (_: IllegalStateException) { return@synchronized false }
+            true
+        }
 
     private fun createAudioTrack(sampleRate: Int, channels: Int, encoding: Int): AudioTrack {
         val channelMask = when (channels) {
@@ -310,10 +368,11 @@ class TestAudioPlayer(
             .build()
     }
 
-    private fun writeAll(track: AudioTrack, pcm: ByteArray) {
+    private fun writeAll(run: PlaybackRun, track: AudioTrack, pcm: ByteArray) {
         var offset = 0
-        while (offset < pcm.size && !stopRequested) {
-            waitWhilePaused()
+        while (offset < pcm.size && !run.stopRequested) {
+            waitWhilePaused(run)
+            if (run.stopRequested) return
             val written = track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
             if (written < 0) error("AudioTrack write failed: $written")
             if (written == 0) continue
@@ -366,5 +425,26 @@ class TestAudioPlayer(
         val p = positionMs
         val d = durationMs
         mainHandler.post { listener.onTestAudioProgress(p, d) }
+    }
+
+    private fun publishProgressForRun(run: PlaybackRun, newPositionMs: Long) {
+        val accepted = synchronized(playbackLock) {
+            if (activeRun !== run || run.stopRequested) false
+            else { positionMs = newPositionMs; true }
+        }
+        if (!accepted) return
+        val p = newPositionMs
+        val d = durationMs
+        mainHandler.post { if (activeRun === run) listener.onTestAudioProgress(p, d) }
+    }
+
+    private fun publishCompletedRunState(run: PlaybackRun) {
+        mainHandler.post {
+            if (latestPlaybackToken == run.sessionToken && activeRun == null) {
+                val finalState = if (sourceUri != null) State.Ready else State.Empty
+                state = finalState
+                listener.onTestAudioStateChanged(finalState)
+            }
+        }
     }
 }

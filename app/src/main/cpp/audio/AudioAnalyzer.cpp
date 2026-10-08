@@ -1,10 +1,13 @@
 #include "audio/AudioAnalyzer.h"
+
 #include <algorithm>
 #include <chrono>
-#include <system_error>
-#include <memory>
 #include <cmath>
+#include <memory>
+#include <system_error>
+
 namespace temposcore {
+
 bool AudioAnalyzer::start(int32_t sampleRate, double expectedBpm) {
     if (running_.exchange(true, std::memory_order_acq_rel)) return false;
     framesConsumed_.store(0, std::memory_order_relaxed);
@@ -13,29 +16,59 @@ bool AudioAnalyzer::start(int32_t sampleRate, double expectedBpm) {
     expectedBpm_ = expectedBpm;
     featureRing_.clear();
     featureRing_.setSampleRate(sampleRate);
+    historyCopy_.clear();
     matcherCadence_.reset();
     appliedResetRequest_.store(resetRequest_.load(std::memory_order_acquire), std::memory_order_release);
     freshFeatureFrames_ = 0;
     diagnosticFeatureCount_ = 0;
     diagnosticFirstFeatureCenter_ = 0;
     diagnosticFeatureCenter_.store(0, std::memory_order_relaxed);
+    diagnosticCaptureFrame_.store(0, std::memory_order_relaxed);
+    diagnosticProcessedFrame_.store(0, std::memory_order_relaxed);
+    diagnosticOldestBufferedFrame_.store(0, std::memory_order_relaxed);
     diagnosticFeatureRateHz_.store(0.0, std::memory_order_relaxed);
     skippedGridDeadlines_.store(0, std::memory_order_relaxed);
     matcherRunCount_.store(0, std::memory_order_relaxed);
     lastMatcherIntervalFrames_.store(0, std::memory_order_relaxed);
     lastMatcherComputeMicros_.store(0, std::memory_order_relaxed);
+    historyLookupMisses_.store(0, std::memory_order_relaxed);
+    historyOverflowEvents_.store(0, std::memory_order_relaxed);
+    continuityResets_.store(0, std::memory_order_relaxed);
+    activeStreamEpoch_ = 0;
+    diagnosticStreamEpoch_.store(0, std::memory_order_relaxed);
+    activeContinuityEpoch_ = 0;
+    activePositionGeneration_ = 0;
+    observationSequence_ = 0;
+    dspReady_ = false;
+    historyOverflowSeen_ = transport_ ? transport_->historyOverflowCount() : 0;
     stft_ = std::make_unique<Stft>(sampleRate);
-    featureGrid_.reset(sampleRate, static_cast<int64_t>(stft_->fftSize() / 2));
     chroma_ = std::make_unique<ChromaExtractor>(sampleRate);
     flux_ = std::make_unique<SpectralFlux>(sampleRate);
     beatTracker_.configure(expectedBpm, sampleRate, static_cast<int32_t>(stft_->hop()));
     worker_ = std::thread(&AudioAnalyzer::run, this, sampleRate);
     return true;
 }
+
 void AudioAnalyzer::stop() noexcept {
     if (!running_.exchange(false, std::memory_order_acq_rel)) return;
     if (worker_.joinable()) worker_.join();
 }
+
+void AudioAnalyzer::resetDspForSpan(const AudioSourceSpan& span) noexcept {
+    stft_ = std::make_unique<Stft>(sampleRate_);
+    chroma_ = std::make_unique<ChromaExtractor>(sampleRate_);
+    flux_ = std::make_unique<SpectralFlux>(sampleRate_);
+    beatTracker_.configure(expectedBpm_, sampleRate_, static_cast<int32_t>(stft_->hop()));
+    stftSourceOriginFrame_ = span.firstFrame;
+    expectedNextSourceFrame_ = span.firstFrame;
+    activeStreamEpoch_ = span.streamEpoch;
+    diagnosticStreamEpoch_.store(span.streamEpoch, std::memory_order_relaxed);
+    activeContinuityEpoch_ = span.continuityEpoch;
+    activePositionGeneration_ = span.positionGeneration;
+    featureGrid_.reset(sampleRate_, static_cast<int64_t>(span.firstFrame + stft_->fftSize() / 2));
+    dspReady_ = true;
+}
+
 void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
     float buffer[1024];
     while (running_.load(std::memory_order_acquire)) {
@@ -43,6 +76,7 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
         if (reset != appliedResetRequest_.load(std::memory_order_acquire)) {
             appliedResetRequest_.store(reset, std::memory_order_release);
             featureRing_.clear();
+            historyCopy_.clear();
             matcherCadence_.reset();
             freshFeatureFrames_ = 0;
             diagnosticFeatureCount_ = 0;
@@ -50,99 +84,161 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
             diagnosticFeatureCenter_.store(0, std::memory_order_relaxed);
             diagnosticFeatureRateHz_.store(0.0, std::memory_order_relaxed);
             float discard[1024];
-            while (ring_.read(discard, 1024) != 0) {}
-            stft_ = std::make_unique<Stft>(sampleRate_);
-            featureGrid_.reset(sampleRate_, static_cast<int64_t>(stft_->fftSize() / 2));
-            chroma_ = std::make_unique<ChromaExtractor>(sampleRate_);
-            flux_ = std::make_unique<SpectralFlux>(sampleRate_);
-            featureRing_.setSampleRate(sampleRate_);
-            beatTracker_.configure(expectedBpm_, sampleRate_,
-                                   static_cast<int32_t>(stft_->hop()));
+            AudioSourceSpan discardedSpan;
+            while (ring_.readStamped(discard, 1024, discardedSpan) != 0) {}
+            dspReady_ = false;
             if (matcher_) {
                 if (resetLocal_.load(std::memory_order_relaxed)) matcher_->requestLocalReacquire();
                 else matcher_->resetCadence();
             }
+            if (transport_) transport_->invalidatePositionState();
         }
-        const uint64_t batchEpoch = appliedResetRequest_.load(std::memory_order_acquire);
-        const uint64_t batchGeneration = transport_ ? transport_->positionGeneration() : 0;
-        const size_t count = ring_.read(buffer, 1024);
-        // Reset may arrive after read and during processing. Such batch may
-        // mutate private DSP state, but must never escape into any published
-        // state, FeatureRing, warmup, cadence, or matcher result. Next loop
-        // applies reset and recreates DSP before accepting new PCM.
-        const auto batchStillCurrent = [&]() noexcept {
-            return resetRequest_.load(std::memory_order_acquire) == batchEpoch &&
-                   appliedResetRequest_.load(std::memory_order_acquire) == batchEpoch;
-        };
-        if (!batchStillCurrent()) continue;
-        if (count) {
-            framesConsumed_.fetch_add(count, std::memory_order_relaxed);
-            if (stft_->process(buffer, count)) {
-                const int64_t center = static_cast<int64_t>((stft_->frameIndex() - 1) * stft_->hop() + stft_->fftSize() / 2);
-                const auto bands = flux_->process(stft_->magnitude());
-                const BeatObservation tempo = beatTracker_.processFlux(bands, stft_->frameEnergy(), center);
-                const bool currentAfterDsp = batchStillCurrent();
-                // Publish every estimator update, including invalid observations, so
-                // silence/lost lock clears the RT target and enables fallback.
-                if (transport_ && currentAfterDsp) transport_->submitTempoObservation(tempo);
-                uint64_t skippedDeadlines = 0;
-                if (!featureGrid_.due(center, &skippedDeadlines)) continue;
-                if (skippedDeadlines) skippedGridDeadlines_.fetch_add(skippedDeadlines, std::memory_order_relaxed);
-                AudioFeatureFrame frame;
-                chroma_->extract(stft_->magnitude(), frame.chroma);
-                frame.onset = bands[0] + bands[1] + bands[2];
-                frame.energy = stft_->frameEnergy();
-                frame.valid = frame.energy > 0.0001f;
-                frame.centerAudioFrame = center;
-                if (!currentAfterDsp || !batchStillCurrent() ||
-                    (transport_ && transport_->positionGeneration() != batchGeneration)) continue;
-                latestFeature_ = frame; // only analyzer writes; readers use sequence protocol.
-                diagnosticFeatureCenter_.store(center, std::memory_order_relaxed);
-                featureSequence_.fetch_add(1, std::memory_order_release);
-                if (diagnosticFeatureCount_++ == 0) diagnosticFirstFeatureCenter_ = center;
-                const int64_t featureSpan = center - diagnosticFirstFeatureCenter_;
-                if (featureSpan > 0) {
-                    diagnosticFeatureRateHz_.store(
-                        static_cast<double>(diagnosticFeatureCount_ - 1) * sampleRate_ / featureSpan,
-                        std::memory_order_relaxed);
-                }
-                // Slow-loop score following (analyzer thread, non-RT): accumulate the
-                // 10 Hz feature frame and run the PositionMatcher on a ~2 s
-                // feature-time (sample-frame) cadence, NOT a wall clock or UI timer.
-                featureRing_.push(frame);
-                ++freshFeatureFrames_;
-                if (matcher_ && transport_ && matcherCadence_.due(center, stft_->sampleRate(), freshFeatureFrames_)) {
-                    const double predicted = transport_->snapshot().quarterBeatPosition;
-                    const int64_t matcherInterval = matcherCadence_.intervalFrames(center);
-                    const auto matcherStart = std::chrono::steady_clock::now();
-                    const PositionObservation obs = matcher_->update(featureRing_, predicted, batchGeneration);
-                    const auto matcherElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                        std::chrono::steady_clock::now() - matcherStart).count();
-                    // The feature ring holds up to 200 frames @ 10 Hz = 20 s of
-                    // live context; report how much of it is valid (spec §28 #11).
-                    if (batchStillCurrent() && transport_->positionGeneration() == batchGeneration)
-                        transport_->submitPositionObservation(obs, featureRing_.durationSeconds());
-                    lastMatcherIntervalFrames_.store(matcherInterval, std::memory_order_relaxed);
-                    lastMatcherComputeMicros_.store(static_cast<uint64_t>(std::max<int64_t>(0, matcherElapsed)),
-                                                    std::memory_order_relaxed);
-                    matcherRunCount_.fetch_add(1, std::memory_order_relaxed);
-                    matcherCadence_.markRun(center);
-                }
+
+        if (transport_) {
+            const uint32_t overflow = transport_->historyOverflowCount();
+            if (overflow != historyOverflowSeen_) {
+                historyOverflowSeen_ = overflow;
+                historyCopy_.clear();
+                featureRing_.clear();
+                matcherCadence_.reset();
+                freshFeatureFrames_ = 0;
+                if (matcher_) matcher_->resetCadence();
+                transport_->invalidatePositionState();
+                historyOverflowEvents_.fetch_add(1, std::memory_order_relaxed);
+            }
+            TransportHistorySegment segment;
+            while (transport_->popHistorySegment(segment)) {
+                historyCopy_.append(segment);
+                diagnosticCaptureFrame_.store(segment.sourceEndFrame(), std::memory_order_relaxed);
             }
         }
-        else {
+
+        const uint64_t batchEpoch = appliedResetRequest_.load(std::memory_order_acquire);
+        AudioSourceSpan span;
+        const size_t count = ring_.readStamped(buffer, 1024, span);
+        if (resetRequest_.load(std::memory_order_acquire) != batchEpoch) continue;
+        if (!count) {
             try {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             } catch (const std::system_error&) {
-                // Keep looping; stop signal remains authoritative.
+                // Stop flag remains authoritative.
             }
+            continue;
+        }
+        framesConsumed_.fetch_add(count, std::memory_order_relaxed);
+        diagnosticProcessedFrame_.store(span.firstFrame + span.frameCount, std::memory_order_relaxed);
+        AudioSourceSpan upcomingSpan;
+        diagnosticOldestBufferedFrame_.store(
+            ring_.peekNextSourceSpan(upcomingSpan) ? upcomingSpan.firstFrame
+                                                   : diagnosticCaptureFrame_.load(std::memory_order_relaxed),
+            std::memory_order_relaxed);
+
+        const bool discontinuity = !dspReady_ || span.streamEpoch != activeStreamEpoch_ ||
+            span.continuityEpoch != activeContinuityEpoch_ ||
+            span.positionGeneration != activePositionGeneration_ ||
+            span.firstFrame != expectedNextSourceFrame_;
+        if (discontinuity) {
+            if (dspReady_) continuityResets_.fetch_add(1, std::memory_order_relaxed);
+            featureRing_.clear();
+            matcherCadence_.reset();
+            freshFeatureFrames_ = 0;
+            diagnosticFeatureCount_ = 0;
+            diagnosticFirstFeatureCenter_ = 0;
+            diagnosticFeatureRateHz_.store(0.0, std::memory_order_relaxed);
+            if (matcher_) matcher_->resetCadence();
+            resetDspForSpan(span);
+            if (transport_) transport_->invalidatePositionState();
+        }
+        expectedNextSourceFrame_ = span.firstFrame + span.frameCount;
+
+        if (!stft_->process(buffer, count)) continue;
+        const int64_t localCenter = static_cast<int64_t>(
+            (stft_->frameIndex() - 1) * stft_->hop() + stft_->fftSize() / 2);
+        const uint64_t centerSourceFrame = stftSourceOriginFrame_ + static_cast<uint64_t>(localCenter);
+        const auto bands = flux_->process(stft_->magnitude());
+        const BeatObservation tempo = beatTracker_.processFlux(
+            bands, stft_->frameEnergy(), static_cast<int64_t>(centerSourceFrame));
+        const bool currentAfterDsp = resetRequest_.load(std::memory_order_acquire) == batchEpoch &&
+            (!transport_ || transport_->positionGeneration() == span.positionGeneration);
+        if (transport_ && currentAfterDsp) transport_->submitTempoObservation(tempo);
+
+        uint64_t skippedDeadlines = 0;
+        if (!featureGrid_.due(static_cast<int64_t>(centerSourceFrame), &skippedDeadlines)) continue;
+        if (skippedDeadlines) skippedGridDeadlines_.fetch_add(skippedDeadlines, std::memory_order_relaxed);
+
+        AudioFeatureFrame frame;
+        chroma_->extract(stft_->magnitude(), frame.chroma);
+        frame.onset = bands[0] + bands[1] + bands[2];
+        frame.energy = stft_->frameEnergy();
+        frame.valid = frame.energy > 0.0001f;
+        frame.centerAudioFrame = static_cast<int64_t>(centerSourceFrame);
+        frame.streamEpoch = span.streamEpoch;
+        frame.continuityEpoch = span.continuityEpoch;
+        frame.positionGeneration = span.positionGeneration;
+        if (!currentAfterDsp) {
+            featureRing_.clear();
+            matcherCadence_.reset();
+            freshFeatureFrames_ = 0;
+            if (matcher_) matcher_->resetCadence();
+            if (transport_) transport_->invalidatePositionState();
+            continue;
+        }
+
+        AudioSourceSpan featureStamp{frame.streamEpoch, frame.continuityEpoch,
+                                     frame.positionGeneration, centerSourceFrame, 0};
+        TransportHistoryPoint historicalPoint;
+        if (transport_ && !historyCopy_.lookup(featureStamp, historicalPoint)) {
+            featureRing_.clear();
+            matcherCadence_.reset();
+            freshFeatureFrames_ = 0;
+            if (matcher_) matcher_->resetCadence();
+            transport_->invalidatePositionState();
+            historyLookupMisses_.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+
+        latestFeature_ = frame; // Existing UI polling API; phase-2 matcher does not read this shared payload.
+        diagnosticFeatureCenter_.store(centerSourceFrame, std::memory_order_relaxed);
+        featureSequence_.fetch_add(1, std::memory_order_release);
+        if (diagnosticFeatureCount_++ == 0) diagnosticFirstFeatureCenter_ = static_cast<int64_t>(centerSourceFrame);
+        const int64_t featureSpan = static_cast<int64_t>(centerSourceFrame) - diagnosticFirstFeatureCenter_;
+        if (featureSpan > 0) {
+            diagnosticFeatureRateHz_.store(
+                static_cast<double>(diagnosticFeatureCount_ - 1) * sampleRate_ / featureSpan,
+                std::memory_order_relaxed);
+        }
+        featureRing_.push(frame);
+        ++freshFeatureFrames_;
+        if (matcher_ && transport_ &&
+            matcherCadence_.due(static_cast<int64_t>(centerSourceFrame), sampleRate_, freshFeatureFrames_)) {
+            const int64_t matcherInterval = matcherCadence_.intervalFrames(static_cast<int64_t>(centerSourceFrame));
+            const auto matcherStart = std::chrono::steady_clock::now();
+            PositionObservation observation = matcher_->update(
+                featureRing_, historicalPoint.position, span.positionGeneration);
+            observation.streamEpoch = frame.streamEpoch;
+            observation.continuityEpoch = frame.continuityEpoch;
+            observation.observationFrame = centerSourceFrame;
+            observation.sequence = ++observationSequence_;
+            const auto matcherElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - matcherStart).count();
+            if (resetRequest_.load(std::memory_order_acquire) == batchEpoch &&
+                transport_->positionGeneration() == span.positionGeneration) {
+                transport_->submitPositionObservation(observation, featureRing_.durationSeconds());
+            }
+            lastMatcherIntervalFrames_.store(matcherInterval, std::memory_order_relaxed);
+            lastMatcherComputeMicros_.store(static_cast<uint64_t>(std::max<int64_t>(0, matcherElapsed)),
+                                            std::memory_order_relaxed);
+            matcherRunCount_.fetch_add(1, std::memory_order_relaxed);
+            matcherCadence_.markRun(static_cast<int64_t>(centerSourceFrame));
         }
     }
 }
+
 bool AudioAnalyzer::latestFeature(AudioFeatureFrame& out) const noexcept {
     const uint64_t before = featureSequence_.load(std::memory_order_acquire);
     if (!before) return false;
     out = latestFeature_;
     return before == featureSequence_.load(std::memory_order_acquire);
 }
-}
+
+} // namespace temposcore

@@ -111,6 +111,16 @@ void test_feature_grid_timing() {
             CHECK(matcherIntervals[i] >= 2LL * rate);
             CHECK(matcherIntervals[i] < 2.2 * rate);
         }
+
+        temposcore::FeatureMatcherCadence absoluteCadence;
+        const int64_t absoluteOrigin = 900000000;
+        for (size_t feature = 0; feature < 20; ++feature) {
+            const int64_t center = absoluteOrigin + static_cast<int64_t>(feature) * rate / 10;
+            CHECK(!absoluteCadence.due(center, rate, feature + 1));
+        }
+        const int64_t twoSeconds = absoluteOrigin + 2LL * rate;
+        CHECK(absoluteCadence.due(twoSeconds, rate, 21));
+        CHECK(absoluteCadence.intervalFrames(twoSeconds) == 2LL * rate);
     }
 }
 REGISTER_TEST(test_feature_grid_timing);

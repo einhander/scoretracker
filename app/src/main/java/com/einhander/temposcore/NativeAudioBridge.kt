@@ -2,24 +2,34 @@ package com.einhander.temposcore
 
 import com.einhander.temposcore.transport.PositionTrackingState
 import com.einhander.temposcore.transport.TransportSnapshot
+import java.util.concurrent.atomic.AtomicLong
 
 /** JNI boundary. Engine time lives in the native audio callback, not in Android timers. */
 object NativeAudioBridge {
+    private val nextTestSessionToken = AtomicLong(0L)
+
     init {
         System.loadLibrary("temposcore_native")
     }
 
     external fun initialize(expectedBpm: Double, startQuarterBeat: Double)
     external fun start(): Boolean
-    external fun startTest(sampleRate: Int): Boolean
-    external fun pushTestAudio(samples: FloatArray)
-    external fun stopTest()
+    external fun startTest(sampleRate: Int, sessionToken: Long): Long
+    external fun pushTestAudio(sessionToken: Long, samples: FloatArray)
+    external fun revokeTestSession(sessionToken: Long)
+    external fun stopTest(sessionToken: Long)
     external fun stop()
     external fun setExpectedBpm(bpm: Double)
     external fun resetPosition(startQuarterBeat: Double)
     external fun setManualPosition(startQuarterBeat: Double)
     external fun setScoreReference(ppq: Int, totalTicks: Long, noteChannels: IntArray, notePitches: IntArray, noteVelocities: IntArray, noteStarts: LongArray, noteEnds: LongArray, tempoTicks: LongArray, tempoValues: IntArray)
     external fun requestGlobalReacquire()
+
+    /** Caller-owned monotonically increasing token; never fetched by a push worker. */
+    fun newTestSessionToken(): Long {
+        val token = nextTestSessionToken.incrementAndGet()
+        return if (token > 0L) token else 0L // Exhaustion fails closed; never reuses token.
+    }
     private external fun getStateRaw(): DoubleArray
 
     fun state(): TransportSnapshot {

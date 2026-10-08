@@ -11,6 +11,10 @@ struct PositionObservation {
     bool valid = false, globalMatch = false;
     PositionTrackingState state = PositionTrackingState::Idle;
     uint64_t resetGeneration = 0;
+    uint64_t streamEpoch = 0;
+    uint64_t continuityEpoch = 0;
+    uint64_t observationFrame = 0;
+    uint64_t sequence = 0;
 };
 class DtwMatcher final {
 public:

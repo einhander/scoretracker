@@ -45,16 +45,32 @@ class FeatureMatcherCadence final {
 public:
     static constexpr size_t MinimumFreshFeatures = 20;
 
-    void reset() noexcept { lastCenterFrame_ = 0; }
-    bool due(int64_t centerFrame, int32_t sampleRate, std::size_t freshFeatures) const noexcept {
-        return sampleRate > 0 && freshFeatures >= MinimumFreshFeatures &&
-               centerFrame - lastCenterFrame_ >= 2LL * sampleRate;
+    void reset() noexcept {
+        lastCenterFrame_ = 0;
+        originCenterFrame_ = 0;
+        hasOrigin_ = false;
+        hasRun_ = false;
     }
-    int64_t intervalFrames(int64_t centerFrame) const noexcept { return centerFrame - lastCenterFrame_; }
-    void markRun(int64_t centerFrame) noexcept { lastCenterFrame_ = centerFrame; }
+    bool due(int64_t centerFrame, int32_t sampleRate, std::size_t freshFeatures) noexcept {
+        if (sampleRate <= 0) return false;
+        if (!hasOrigin_) {
+            originCenterFrame_ = centerFrame;
+            hasOrigin_ = true;
+        }
+        const int64_t reference = hasRun_ ? lastCenterFrame_ : originCenterFrame_;
+        return freshFeatures >= MinimumFreshFeatures && centerFrame >= reference &&
+               centerFrame - reference >= 2LL * sampleRate;
+    }
+    int64_t intervalFrames(int64_t centerFrame) const noexcept {
+        return centerFrame - (hasRun_ ? lastCenterFrame_ : originCenterFrame_);
+    }
+    void markRun(int64_t centerFrame) noexcept { lastCenterFrame_ = centerFrame; hasRun_ = true; }
 
 private:
     int64_t lastCenterFrame_ = 0;
+    int64_t originCenterFrame_ = 0;
+    bool hasOrigin_ = false;
+    bool hasRun_ = false;
 };
 
 } // namespace temposcore

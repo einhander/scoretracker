@@ -5,6 +5,7 @@
 #include <thread>
 
 using temposcore::SpscAudioRing;
+using temposcore::AudioSourceSpan;
 
 void test_fifo() {
     SpscAudioRing ring(128); float in[100], out[100];
@@ -30,6 +31,35 @@ void test_available_snapshot_bounds() {
     CHECK(SpscAudioRing::boundedAvailableSnapshot(100, 120, 8) == 8);
     CHECK(SpscAudioRing::boundedAvailableSnapshot(120, 100, 8) == 0);
     CHECK(SpscAudioRing::boundedAvailableSnapshot(0, UINT64_MAX, 8) == 8);
+}
+void test_stamped_reads_stop_at_drop_discontinuity() {
+    SpscAudioRing ring(8);
+    float input[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    float output[8]{};
+    AudioSourceSpan span{7, 3, 11, 100, 6};
+    CHECK(ring.writeStamped(input, 6, span) == 6);
+    span.firstFrame = 106;
+    span.frameCount = 6;
+    CHECK(ring.writeStamped(input + 2, 6, span) == 2); // suffix drops; source still advances by six.
+
+    AudioSourceSpan readSpan;
+    CHECK(ring.peekNextSourceSpan(readSpan));
+    CHECK(readSpan.firstFrame == 100 && readSpan.frameCount == 6);
+    CHECK(ring.readStamped(output, 8, readSpan) == 6);
+    CHECK(readSpan.streamEpoch == 7 && readSpan.continuityEpoch == 3);
+    CHECK(readSpan.positionGeneration == 11 && readSpan.firstFrame == 100 && readSpan.frameCount == 6);
+    CHECK(ring.readStamped(output, 8, readSpan) == 2);
+    CHECK(readSpan.firstFrame == 106 && readSpan.frameCount == 2 && readSpan.continuityEpoch == 3);
+    CHECK(ring.droppedSamples() == 4);
+
+    span.firstFrame = 112;
+    span.frameCount = 4;
+    span.continuityEpoch = 4;
+    CHECK(ring.writeStamped(input, 4, span) == 4);
+    CHECK(ring.peekNextSourceSpan(readSpan));
+    CHECK(readSpan.firstFrame == 112 && readSpan.frameCount == 4 && readSpan.continuityEpoch == 4);
+    CHECK(ring.readStamped(output, 8, readSpan) == 4);
+    CHECK(readSpan.firstFrame == 112 && readSpan.continuityEpoch == 4);
 }
 void test_concurrent() {
     SpscAudioRing ring(1024); std::atomic<bool> done{false}; std::atomic<bool> availabilityBounded{true};
@@ -71,4 +101,5 @@ void test_concurrent() {
     CHECK(maximumAvailable.load(std::memory_order_relaxed) <= ring.capacity());
 }
 REGISTER_TEST(test_fifo); REGISTER_TEST(test_wrap); REGISTER_TEST(test_overflow); REGISTER_TEST(test_empty_and_full);
-REGISTER_TEST(test_available_snapshot_bounds); REGISTER_TEST(test_concurrent);
+REGISTER_TEST(test_available_snapshot_bounds); REGISTER_TEST(test_stamped_reads_stop_at_drop_discontinuity);
+REGISTER_TEST(test_concurrent);

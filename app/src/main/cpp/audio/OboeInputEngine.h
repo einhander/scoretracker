@@ -1,6 +1,7 @@
 #pragma once
 
 #include "audio/AudioAnalyzer.h"
+#include "audio/TestPcmWriterGate.h"
 #include "position/PositionMatcher.h"
 #include "position/ScoreReference.h"
 #include "transport/LiveTransport.h"
@@ -8,6 +9,7 @@
 #include <oboe/Oboe.h>
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 namespace temposcore {
 
@@ -16,10 +18,12 @@ class OboeInputEngine final : public oboe::AudioStreamDataCallback,
 public:
     void initialize(double expectedBpm, double startQuarterBeat) noexcept;
     bool start();
-    // Deterministic test source: no microphone/Oboe stream. Decoded mono PCM
-    // is pushed from Android through pushTestAudio() at playback pace.
-    bool startTest(int32_t sampleRate);
-    void pushTestAudio(const float* mono, size_t numFrames) noexcept;
+    // Caller token originates in playback run and is immutable for its lifetime.
+    uint64_t startTest(int32_t sampleRate, uint64_t callerSession);
+    bool testSessionActive(uint64_t sessionToken) const noexcept;
+    void pushTestAudio(uint64_t sessionToken, const float* mono, size_t numFrames) noexcept;
+    void revokeTestSession(uint64_t sessionToken) noexcept;
+    void stopTest(uint64_t sessionToken);
     void stop();
     void setExpectedBpm(double bpm) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
@@ -44,6 +48,7 @@ public:
 
 private:
     bool openStream(oboe::InputPreset preset);
+    void stopInputLocked();
 
     std::shared_ptr<oboe::AudioStream> stream_;
     LiveTransport transport_;
@@ -54,6 +59,18 @@ private:
     double expectedBpm_ = 120.0;
     int32_t sampleRate_ = 48000;
     int32_t channelCount_ = 1;
+    // Single PCM producer owns these counters. Position resets never touch them.
+    uint64_t streamEpoch_ = 0;
+    uint64_t capturedFrames_ = 0;
+    uint64_t continuityEpoch_ = 1;
+    TestPcmWriterGate testPcmWriterGate_;
+    TestPcmSessionIdentity testPcmSessionIdentity_;
+    // Test-audio ingestion is non-RT; serialize JNI producers to preserve ring SPSC ownership.
+    std::mutex testPcmWriterMutex_;
+    std::mutex lifecycleMutex_;
+    std::atomic<uint64_t> activeTestSession_{0};
+    std::atomic<uint64_t> activeTestCallerSession_{0};
+    uint64_t activeTestEngineToken_ = 0; // lifecycleMutex_ owned; prevents stale test cleanup stopping newer mic.
     std::atomic<bool> streamError_{false};
 };
 

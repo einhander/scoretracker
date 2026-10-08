@@ -2,11 +2,17 @@
 
 #include "beat/BeatTracker.h"
 #include "position/DtwMatcher.h"
+#include "transport/TransportHistory.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 
 namespace temposcore {
+
+static_assert(std::atomic<uint64_t>::is_always_lock_free && std::atomic<double>::is_always_lock_free,
+              "Existing callback transport atomics must be lock-free on supported audio ABIs");
 
 struct TransportState {
     // Beat/transport loop (fast).
@@ -27,6 +33,12 @@ struct TransportState {
 
 class LiveTransport {
 public:
+    LiveTransport();
+    LiveTransport(const LiveTransport&) = delete;
+    LiveTransport& operator=(const LiveTransport&) = delete;
+    // Called with callback/analyzer stopped. New source epoch; score position is
+    // retained, but prior PCM history/mailboxes become unqueryable.
+    void beginStreamEpoch(uint64_t streamEpoch) noexcept;
     void configure(double expectedBpm, double startQuarterBeat) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
     void setExpectedBpm(double expectedBpm) noexcept;
@@ -34,18 +46,66 @@ public:
     // Publish an Idle score-following state (main thread, on stop) so the UI
     // does not keep showing a stale LOCKED/Weak state after Stop (spec §30).
     void publishIdle() noexcept;
+    void invalidatePositionState() noexcept;
     // Publish the latest score-following observation (analyzer thread). The
     // validContextSeconds is the number of valid seconds in the live feature
     // window (spec §28 field 11); the analyzer owns the FeatureRing.
     void submitPositionObservation(const PositionObservation&, double validContextSeconds) noexcept;
     void submitTempoObservation(const BeatObservation& observation) noexcept;
+    // Unstamped compatibility for legacy host transport tests only. Production
+    // microphone/test PCM must call processSourceFrames with capture stamps.
     void processFrames(int32_t numFrames, int32_t sampleRate) noexcept;
+    uint64_t processSourceFrames(int32_t numFrames, int32_t sampleRate,
+                                 uint64_t streamEpoch, uint64_t continuityEpoch,
+                                 uint64_t firstSourceFrame) noexcept;
+    bool popHistorySegment(TransportHistorySegment& segment) noexcept { return historyChannel_->pop(segment); }
+    uint32_t historyOverflowCount() const noexcept { return historyChannel_->overflowCount(); }
+    // Monotonic across stream epochs; published by source producer before any
+    // PCM ring drop and independent of worker history draining.
+    uint64_t capturedFrameWatermark() const noexcept {
+        return capturedFrameWatermark_.load(std::memory_order_acquire);
+    }
+    uint64_t streamEpoch() const noexcept { return publishedStreamEpoch_.load(std::memory_order_acquire); }
+    uint32_t droppedObservations() const noexcept { return droppedObservations_.load(std::memory_order_relaxed); }
+    void enableDiagnostics(bool enabled) noexcept { diagnosticsEnabled_.store(enabled, std::memory_order_relaxed); }
+    bool popDiagnostic(TransportDiagnosticRecord& record) noexcept { return diagnosticChannel_->pop(record); }
+    uint32_t droppedDiagnosticRecords() const noexcept { return diagnosticChannel_->dropped(); }
     TransportState snapshot() const noexcept;
     uint64_t positionGeneration() const noexcept {
         return positionGeneration_.load(std::memory_order_acquire);
     }
 
 private:
+    struct PendingObservation {
+        PositionObservation observation{};
+        double validContextSeconds = 0.0;
+    };
+    static constexpr uint32_t ObservationCapacity = 8;
+    static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                  "Observation mailbox indices must be lock-free on supported ABIs");
+    bool enqueueObservation(const PendingObservation& observation) noexcept;
+    bool dequeueObservation(PendingObservation& observation) noexcept;
+    void processFramesImpl(int32_t numFrames, int32_t sampleRate,
+                           uint64_t streamEpoch, uint64_t continuityEpoch,
+                           uint64_t firstSourceFrame) noexcept;
+
+    std::unique_ptr<TransportHistory> callbackHistory_;
+    std::unique_ptr<TransportHistoryChannel> historyChannel_;
+    std::unique_ptr<TransportDiagnosticsChannel> diagnosticChannel_;
+    std::array<PendingObservation, ObservationCapacity> observations_{};
+    std::atomic<uint32_t> observationHead_{0};
+    std::atomic<uint32_t> observationTail_{0};
+    std::atomic<uint32_t> droppedObservations_{0};
+    std::atomic<bool> diagnosticsEnabled_{false};
+    std::atomic<uint64_t> capturedFrameWatermark_{0};
+    std::atomic<uint64_t> publishedStreamEpoch_{1};
+    uint64_t streamEpochRt_ = 1;
+    uint64_t legacySourceFrame_ = 0;
+    double cumulativeBaseBeatsRt_ = 0.0;
+    uint64_t lastAppliedObservationSequence_ = 0;
+    uint64_t lastContinuityEpochRt_ = 0;
+    uint32_t rejectedObservations_ = 0;
+
     double expectedBpmRt_ = 120.0;
     double currentBpmRt_ = 120.0;
     double positionRt_ = 0.0;
@@ -74,16 +134,8 @@ private:
     std::atomic<int> publishedPositionState_{0};
     std::atomic<double> publishedAmbiguity_{0.0};
     std::atomic<double> publishedValidContextSeconds_{0.0};
-    // Position-correction mailbox.  Store an OFFSET observation, not a frozen
-    // absolute score position: the song keeps advancing while a correction is
-    // being slewed.  processFrames copies each new generation into the RT-only
-    // remainingPositionErrorRt_ and then drives that error toward zero.
-    std::atomic<double> correctionErrorBeats_{0.0}, correctionConfidence_{0.0}, correctionAmbiguity_{0.0};
-    std::atomic<bool> correctionValid_{false}, correctionGlobal_{false};
-    std::atomic<uint64_t> correctionGeneration_{0};
-    // Even epoch means stable mailbox; odd means non-RT publisher is writing.
-    std::atomic<uint64_t> positionPublishEpoch_{0};
-    uint64_t appliedCorrectionGeneration_ = 0;
+    // Single analyzer producer -> audio callback consumer. Payload slots are
+    // plain data protected by ownership indices, never concurrent seqlock reads.
     double remainingPositionErrorRt_ = 0.0;
 };
 

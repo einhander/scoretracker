@@ -15,9 +15,20 @@
 #include <thread>
 #include <memory>
 namespace temposcore {
+static_assert(std::atomic<uint64_t>::is_always_lock_free && std::atomic<double>::is_always_lock_free,
+              "Analyzer diagnostic atomics must be lock-free on supported Android ABIs");
 struct AudioAnalyzerDiagnostics {
     int32_t sampleRate = 0;
+    uint64_t streamEpoch = 0;
     uint64_t framesConsumed = 0;
+    uint64_t capturedFrames = 0;
+    uint64_t writtenFrames = 0;
+    uint64_t consumedFrames = 0;
+    uint64_t droppedFrames = 0;
+    uint64_t oldestBufferedFrame = 0;
+    uint64_t latestProcessedFrame = 0;
+    uint64_t latestCapturedFrame = 0;
+    uint64_t latestHistoryFrame = 0;
     uint64_t featureCount = 0;
     int64_t latestFeatureCenterFrame = 0;
     double featureRateHz = 0.0;
@@ -26,6 +37,9 @@ struct AudioAnalyzerDiagnostics {
     uint64_t matcherRunCount = 0;
     int64_t lastMatcherIntervalFrames = 0;
     uint64_t lastMatcherComputeMicros = 0;
+    uint64_t historyLookupMisses = 0;
+    uint64_t historyOverflowEvents = 0;
+    uint64_t continuityResets = 0;
 };
 
 class AudioAnalyzer final {
@@ -47,7 +61,18 @@ public:
     AudioAnalyzerDiagnostics diagnostics() const noexcept {
         AudioAnalyzerDiagnostics d;
         d.sampleRate = diagnosticSampleRate_.load(std::memory_order_relaxed);
+        d.streamEpoch = transport_ ? transport_->streamEpoch()
+                                   : diagnosticStreamEpoch_.load(std::memory_order_relaxed);
         d.framesConsumed = framesConsumed_.load(std::memory_order_relaxed);
+        d.capturedFrames = transport_ ? transport_->capturedFrameWatermark()
+                                     : diagnosticCaptureFrame_.load(std::memory_order_relaxed);
+        d.writtenFrames = ring_.writtenSamples();
+        d.consumedFrames = ring_.consumedSamples();
+        d.droppedFrames = ring_.droppedSamples();
+        d.oldestBufferedFrame = diagnosticOldestBufferedFrame_.load(std::memory_order_relaxed);
+        d.latestProcessedFrame = diagnosticProcessedFrame_.load(std::memory_order_relaxed);
+        d.latestCapturedFrame = d.capturedFrames;
+        d.latestHistoryFrame = diagnosticCaptureFrame_.load(std::memory_order_relaxed);
         d.featureCount = featureSequence_.load(std::memory_order_relaxed);
         d.latestFeatureCenterFrame = diagnosticFeatureCenter_.load(std::memory_order_relaxed);
         d.featureRateHz = diagnosticFeatureRateHz_.load(std::memory_order_relaxed);
@@ -56,6 +81,9 @@ public:
         d.matcherRunCount = matcherRunCount_.load(std::memory_order_relaxed);
         d.lastMatcherIntervalFrames = lastMatcherIntervalFrames_.load(std::memory_order_relaxed);
         d.lastMatcherComputeMicros = lastMatcherComputeMicros_.load(std::memory_order_relaxed);
+        d.historyLookupMisses = historyLookupMisses_.load(std::memory_order_relaxed);
+        d.historyOverflowEvents = historyOverflowEvents_.load(std::memory_order_relaxed);
+        d.continuityResets = continuityResets_.load(std::memory_order_relaxed);
         return d;
     }
     // Callers must retry in a loop when this returns false.
@@ -71,6 +99,7 @@ public:
     }
 private:
     void run(int32_t sampleRate) noexcept;
+    void resetDspForSpan(const AudioSourceSpan& span) noexcept;
     FeatureGrid featureGrid_;
     SpscAudioRing& ring_;
     std::thread worker_;
@@ -79,6 +108,10 @@ private:
     std::atomic<uint64_t> featureSequence_{0};
     std::atomic<uint64_t> skippedGridDeadlines_{0};
     std::atomic<int64_t> diagnosticFeatureCenter_{0};
+    std::atomic<uint64_t> diagnosticCaptureFrame_{0};
+    std::atomic<uint64_t> diagnosticStreamEpoch_{0};
+    std::atomic<uint64_t> diagnosticProcessedFrame_{0};
+    std::atomic<uint64_t> diagnosticOldestBufferedFrame_{0};
     std::atomic<double> diagnosticFeatureRateHz_{0.0};
     std::atomic<int32_t> diagnosticSampleRate_{0};
     std::atomic<uint64_t> matcherRunCount_{0};
@@ -96,10 +129,22 @@ private:
     PositionMatcher* matcher_ = nullptr;
     LiveTransport* transport_ = nullptr;
     FeatureMatcherCadence matcherCadence_;
+    TransportHistory historyCopy_;
     std::atomic<uint64_t> appliedResetRequest_{0};
     size_t freshFeatureFrames_ = 0;
     uint64_t diagnosticFeatureCount_ = 0;
     int64_t diagnosticFirstFeatureCenter_ = 0;
+    uint64_t activeStreamEpoch_ = 0;
+    uint64_t activeContinuityEpoch_ = 0;
+    uint64_t activePositionGeneration_ = 0;
+    uint64_t stftSourceOriginFrame_ = 0;
+    uint64_t expectedNextSourceFrame_ = 0;
+    uint64_t observationSequence_ = 0;
+    uint32_t historyOverflowSeen_ = 0;
+    bool dspReady_ = false;
+    std::atomic<uint64_t> historyLookupMisses_{0};
+    std::atomic<uint64_t> historyOverflowEvents_{0};
+    std::atomic<uint64_t> continuityResets_{0};
     int32_t sampleRate_ = 48000;
     double expectedBpm_ = 120.0;
 };
