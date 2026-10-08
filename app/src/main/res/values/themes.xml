@@ -1,12 +1,37 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.TempoScore" parent="Theme.MaterialComponents.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:colorAccent">@color/black</item>
-        <item name="colorPrimary">@color/black</item>
-        <item name="colorPrimaryVariant">@color/black</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorPrimaryVariant">@color/accent</item>
+        <item name="android:textColorPrimary">@color/ink</item>
+        <item name="android:textColorSecondary">@color/muted</item>
         <item name="colorOnPrimary">@color/white</item>
         <item name="android:navigationBarColor">@color/black</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:statusBarColor">@color/black</item>
+    </style>
+    <style name="Widget.TempoScore.QuietButton" parent="Widget.MaterialComponents.Button.TextButton">
+        <item name="android:minWidth">0dp</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:paddingLeft">8dp</item>
+        <item name="android:paddingRight">8dp</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+    </style>
+    <style name="Widget.TempoScore.Metric" parent="">
+        <item name="android:textSize">12sp</item>
+        <item name="android:maxLines">2</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:gravity">center</item>
+        <item name="android:includeFontPadding">false</item>
+    </style>
+    <style name="Widget.TempoScore.Status" parent="">
+        <item name="android:textSize">12sp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:includeFontPadding">false</item>
     </style>
 </resources>

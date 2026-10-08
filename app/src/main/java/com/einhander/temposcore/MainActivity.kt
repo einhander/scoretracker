@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
 import android.view.Choreographer
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var testSeekUserDragging = false
     private var noteNaming = NoteNaming.Letters
     private var showTestMode = false
+    private var testPanelExpanded = true
     private var scoreScrubActive = false
     private var scoreScrubPosition = 0.0
     private var smoothedTestPosition = 0.0
@@ -70,6 +72,14 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Keep controls outside display cutouts. Configure once: transient system
+        // bars must not change the content bounds or cause inset/padding jumps.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_NEVER
+            }
+        }
+        restoreImmersiveMode()
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
         testAudioPlayer = TestAudioPlayer(this, this)
@@ -83,7 +93,14 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         applyTestModeVisibility()
 
         binding.settingsButton.setOnClickListener { showSettingsMenu() }
-        binding.testModeButton.setOnClickListener { setTestModeVisible(!showTestMode) }
+        binding.testModeButton.setOnClickListener {
+            testPanelExpanded = !testPanelExpanded
+            applyTestModeVisibility()
+        }
+        binding.exitTestModeButton.setOnClickListener {
+            testAudioPlayer.stop()
+            setTestModeVisible(false)
+        }
 
         binding.scoreView.onPositionScrubStart = { position ->
             scoreScrubActive = true
@@ -122,7 +139,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
         binding.testPlayPauseButton.setOnClickListener {
             if (score == null) {
-                Toast.makeText(this, "Load MIDI first", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, R.string.midi_first, Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             // startTest() stops an active Oboe stream, so test mode and microphone
@@ -139,7 +156,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 if (fromUser) {
                     val duration = testAudioPlayer.durationMs
                     val pos = if (duration > 0L) duration * progress / 1000L else 0L
-                    binding.testTimeText.text = "${formatTime(pos)} / ${formatTime(duration)}"
+                    binding.testTimeText.text = getString(R.string.test_time, formatTime(pos), formatTime(duration))
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) { testSeekUserDragging = true }
@@ -160,6 +177,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 trackSelection = TrackSelection.Track(pos)
                 visibleNotes = score?.visibleNotes(trackSelection) ?: emptyList()
                 binding.scoreView.trackSelection = trackSelection
+                binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
+                    (view?.contentDescription?.toString() ?: parent?.getItemAtPosition(pos)?.toString() ?: "")
                 updateUiFromTransport()
             }
         }
@@ -167,10 +186,31 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     override fun onResume() {
         super.onResume()
+        restoreImmersiveMode()
         if (!frameLoopActive) {
             frameLoopActive = true
             Choreographer.getInstance().postFrameCallback(this)
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // SAF and microphone permission dialogs can return focus without a new
+        // onResume. Do not fight system gestures while focus stays unchanged.
+        if (hasFocus) restoreImmersiveMode()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun restoreImmersiveMode() {
+        // Available on every supported API (26+). IMMERSIVE_STICKY lets edge
+        // gestures reveal transient bars; layout flags keep the score stationary.
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
     }
 
     override fun onPause() {
@@ -214,7 +254,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                     populateTrackSelector(parsed)
                     expectedBpm = parsed.initialBpm
                     binding.scoreView.score = parsed
-                    binding.fileNameText.text = "$name  •  ${parsed.notes.size} notes"
+                    binding.fileNameText.text = name
+                    binding.fileNameText.contentDescription = name
                     binding.listenButton.isEnabled = true
                     binding.resetButton.isEnabled = true
                     configureNativeEngine()
@@ -224,7 +265,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 }
             } catch (t: Throwable) {
                 runOnUiThread {
-                    Toast.makeText(this, "MIDI error: ${t.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.midi_error, t.message), Toast.LENGTH_LONG).show()
                 }
             } finally {
                 runOnUiThread { binding.loadMidiButton.isEnabled = true }
@@ -234,9 +275,33 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun populateTrackSelector(score: MidiScore) {
         if (score.tracks.size > 1) {
-            val items = score.tracks.map { ScoreNavigator.trackLabel(it, noteNaming) }
-            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items).apply {
-                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            val items = score.tracks.map {
+                getString(R.string.track_item, it.index + 1, it.name?.takeIf { name -> name.isNotBlank() }
+                    ?: getString(R.string.track_unnamed))
+            }
+            val details = score.tracks.map {
+                when {
+                    it.noteCount == 0 -> getString(R.string.track_no_notes)
+                    it.pitchMin != null && it.pitchMax != null -> getString(R.string.track_details,
+                        it.noteCount, ScoreNavigator.pitchName(it.pitchMin, noteNaming),
+                        ScoreNavigator.pitchName(it.pitchMax, noteNaming))
+                    else -> getString(R.string.track_note_count, it.noteCount)
+                }
+            }
+            val adapter = object : ArrayAdapter<String>(this, R.layout.track_spinner_item, items) {
+                override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                    return super.getView(position, convertView, parent).apply {
+                        contentDescription = "${items[position]}. ${details[position]}"
+                    }
+                }
+
+                override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                    val row = convertView ?: layoutInflater.inflate(R.layout.track_spinner_dropdown_item, parent, false)
+                    row.findViewById<android.widget.TextView>(R.id.trackTitle).text = items[position]
+                    row.findViewById<android.widget.TextView>(R.id.trackDetails).text = details[position]
+                    row.contentDescription = "${items[position]}. ${details[position]}"
+                    return row
+                }
             }
             // Guard must be set before the adapter assignment: setAdapter can
             // fire onItemSelected synchronously (selection clamp) when the old
@@ -254,6 +319,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 is TrackSelection.Track -> selected.index.coerceIn(0, items.lastIndex)
             }
             binding.trackSpinner.setSelection(selection, false)
+            binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
+                items[selection] + ". " + details[selection]
             spinnerPopulating = false
             binding.trackSelectorRow.visibility = View.VISIBLE
         } else {
@@ -317,7 +384,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             runOnUiThread {
                 binding.listenButton.isEnabled = true
                 binding.listenButton.text = if (ok) getString(R.string.stop_listening) else getString(R.string.start_listening)
-                if (!ok) Toast.makeText(this, "Could not start Oboe microphone input", Toast.LENGTH_LONG).show()
+                if (!ok) Toast.makeText(this, R.string.mic_error, Toast.LENGTH_LONG).show()
             }
         }.start()
     }
@@ -355,26 +422,28 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
 
         binding.scoreView.quarterBeatPosition = pos
-        binding.tempoText.text = String.format(
-            Locale.US,
-            "MIDI %.1f  |  LIVE %s  |  transport %.1f BPM",
-            expectedBpm,
-            if (state.detectedBpm > 1.0) String.format(Locale.US, "%.1f BPM", state.detectedBpm) else "--.- BPM",
-            state.transportBpm,
-        )
-        binding.positionText.text = String.format(
-            Locale.US,
-            "Bar %d  Beat %.2f  (%d/%d)",
+        binding.tempoText.text = getString(R.string.midi_tempo, expectedBpm)
+        binding.liveTempoText.text = getString(R.string.live_tempo,
+            if (state.detectedBpm > 1.0) String.format(Locale.getDefault(), "%.1f", state.detectedBpm) else "—")
+        binding.transportTempoText.text = getString(R.string.transport_tempo, state.transportBpm)
+        binding.positionText.text = getString(
+            R.string.position_format,
             barBeat.bar,
             barBeat.beat,
             barBeat.numerator,
             barBeat.denominator,
         )
-        binding.nowText.text = "Now: ${ScoreNavigator.noteList(now, noteNaming)}"
-        binding.nextText.text = "Next: ${ScoreNavigator.noteList(next, noteNaming)}"
+        binding.nowText.text = getString(R.string.now_notes, ScoreNavigator.noteList(now, noteNaming))
+        binding.nextText.text = getString(R.string.next_notes, ScoreNavigator.noteList(next, noteNaming))
         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
-        binding.confidenceText.text = String.format(Locale.US, "Beat: %.0f%%", state.beatConfidence * 100.0)
+        binding.confidenceText.text = getString(R.string.beat_confidence, state.beatConfidence * 100.0)
         binding.positionStatusText.text = formatPositionStatus(state)
+        binding.positionStatusText.setTextColor(ContextCompat.getColor(this,
+            if (state.positionState == PositionTrackingState.Weak) R.color.warning else R.color.ink))
+        binding.positionStatusText.contentDescription = if (state.positionState == PositionTrackingState.Locked) {
+            getString(R.string.position_locked) + ". " +
+                getString(R.string.position_confidence_description, state.positionConfidence * 100.0)
+        } else formatPositionStatus(state)
         val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
             testAudioPlayer.state == TestAudioPlayer.State.Paused
         binding.listenButton.isEnabled = !testActive
@@ -451,22 +520,26 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private fun applyTestModeVisibility() {
-        binding.testControlsContainer.visibility = if (showTestMode) View.VISIBLE else View.GONE
+        binding.testControlsContainer.visibility = if (showTestMode && testPanelExpanded) View.VISIBLE else View.GONE
+        binding.testModeButton.visibility = if (showTestMode) View.VISIBLE else View.GONE
         binding.testModeButton.text = getString(
-            if (showTestMode) R.string.hide_test_mode else R.string.test_mode,
+            if (testPanelExpanded) R.string.hide_test_mode else R.string.test_mode,
         )
+        binding.testModeButton.contentDescription = getString(
+            if (testPanelExpanded) R.string.test_panel_close else R.string.test_panel_open)
         binding.testModeButton.isSelected = showTestMode
     }
 
     private fun setTestModeVisible(visible: Boolean) {
         showTestMode = visible
+        if (visible) testPanelExpanded = true
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
             .putBoolean(KEY_SHOW_TEST_MODE, showTestMode).apply()
         applyTestModeVisibility()
     }
 
     private fun loadTestAudio(uri: Uri) {
-        val name = displayName(uri) ?: "test audio"
+        val name = displayName(uri) ?: getString(R.string.test_audio_fallback)
         testAudioPlayer.load(uri)
         binding.testAudioNameText.text = name
         binding.testPlayPauseButton.isEnabled = score != null
@@ -478,6 +551,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     override fun onTestAudioStateChanged(state: TestAudioPlayer.State) {
         val hasAudio = state != TestAudioPlayer.State.Empty
         val active = state == TestAudioPlayer.State.Playing || state == TestAudioPlayer.State.Paused
+        binding.testStateText.text = getString(when (state) {
+            TestAudioPlayer.State.Playing -> R.string.test_active
+            TestAudioPlayer.State.Paused -> R.string.test_paused
+            else -> R.string.test_inactive
+        })
         binding.testPlayPauseButton.isEnabled = hasAudio && score != null
         binding.testRestartButton.isEnabled = hasAudio && score != null
         binding.testStopButton.isEnabled = active
@@ -494,7 +572,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     override fun onTestAudioProgress(positionMs: Long, durationMs: Long) {
         if (!testSeekUserDragging) {
-            binding.testTimeText.text = "${formatTime(positionMs)} / ${formatTime(durationMs)}"
+            binding.testTimeText.text = getString(R.string.test_time, formatTime(positionMs), formatTime(durationMs))
             binding.testSeekBar.progress = if (durationMs > 0L) {
                 ((positionMs.coerceIn(0L, durationMs) * 1000L) / durationMs).toInt()
             } else 0
@@ -502,7 +580,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     override fun onTestAudioError(message: String) {
-        Toast.makeText(this, "Test audio error: $message", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, getString(R.string.test_error, message), Toast.LENGTH_LONG).show()
     }
 
     private fun formatTime(ms: Long): String {
@@ -511,14 +589,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private fun formatPositionStatus(state: TransportSnapshot): String = when (state.positionState) {
-        PositionTrackingState.Idle -> "Position: idle"
-        PositionTrackingState.Acquiring ->
-            "Position: locating ${String.format(Locale.US, "%.1f", state.validContextSeconds)}/20 s"
-        PositionTrackingState.Locked ->
-            "Position: LOCKED ${String.format(Locale.US, "%.0f", state.positionConfidence * 100.0)}% | " +
-                "error ${String.format(Locale.US, "%+.2f", state.positionErrorBeats)} beat"
-        PositionTrackingState.Weak -> "Position: weak — reacquiring"
-        PositionTrackingState.Reacquiring -> "Position: reacquiring"
+        PositionTrackingState.Idle -> getString(R.string.position_idle)
+        PositionTrackingState.Acquiring -> getString(R.string.position_acquiring)
+        PositionTrackingState.Locked -> getString(R.string.position_locked)
+        PositionTrackingState.Weak -> getString(R.string.position_weak)
+        PositionTrackingState.Reacquiring -> getString(R.string.position_reacquiring)
     }
 
     private fun displayName(uri: Uri): String? {

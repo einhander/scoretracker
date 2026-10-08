@@ -7,6 +7,8 @@ import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import androidx.core.content.ContextCompat
+import com.einhander.temposcore.R
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.NoteNaming
@@ -21,12 +23,18 @@ import kotlin.math.roundToInt
  *
  * It draws a five-line staff-like guide, a fixed playhead and upcoming MIDI noteheads.
  * It is NOT a notation engraver: clefs, accidentals, voices, beams and quantization belong
- * to the dedicated engraving milestone described in SPEC.md.
+ * to a later dedicated engraving milestone.
  */
 class ScoreStaffView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
+    private val density = resources.displayMetrics.density
+    private val scaledDensity = resources.displayMetrics.scaledDensity
+    private fun dp(value: Float) = value * density
+    private fun color(id: Int) = ContextCompat.getColor(context, id)
+    private val cursorLabel = context.getString(R.string.cursor_now)
+    private val emptyLabel = context.getString(R.string.score_empty)
 
     private data class LabelBounds(
         val left: Float,
@@ -36,27 +44,31 @@ class ScoreStaffView @JvmOverloads constructor(
     )
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xff222222.toInt()
-        strokeWidth = 2f
+        color = color(R.color.staff_line)
+        strokeWidth = dp(0.8f)
     }
     private val notePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xff111111.toInt()
+        color = color(R.color.accent)
         style = Paint.Style.FILL
     }
     private val futurePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xff777777.toInt()
+        color = color(R.color.ink)
+        style = Paint.Style.FILL
+    }
+    private val pastPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = color(R.color.past_note)
         style = Paint.Style.FILL
     }
     private val cursorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xffb00020.toInt()
-        strokeWidth = 4f
+        color = color(R.color.cursor)
+        strokeWidth = dp(1.5f)
     }
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xff333333.toInt()
-        textSize = 28f
+    private val textPaint = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = color(R.color.muted)
+        textSize = 12f * scaledDensity
     }
     private val noteLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xff333333.toInt()
+        color = color(R.color.ink)
         textAlign = Paint.Align.CENTER
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
     }
@@ -162,41 +174,63 @@ class ScoreStaffView @JvmOverloads constructor(
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
-        val staffCenter = h * 0.48f
-        val lineGap = max(18f, h * 0.055f)
+        val localScore = score
+        val selectedNotes = localScore?.visibleNotes(trackSelection) ?: emptyList()
+        val octaveShift = displayOctaveShift(selectedNotes)
+        val minBeat = quarterBeatPosition - 2.5
+        val maxBeat = quarterBeatPosition + 8.0
+        val visibleNotes = if (localScore != null) selectedNotes.filter {
+            localScore.noteStartBeat(it) in minBeat..maxBeat
+        } else emptyList()
+        // Reserve a separate caption band, then fit heads, stems and ledger lines.
+        // Typical register: four line gaps occupy 42% of the viewport height.
+        val topInset = minOf(dp(30f), h * 0.22f)
+        val bottomInset = minOf(dp(12f), h * 0.08f)
+        var topUnits = 2f
+        var bottomUnits = 2f
+        visibleNotes.forEach {
+            val step = diatonicStepFromB4(it.pitch) + octaveShift * 7
+            topUnits = max(topUnits, step / 2f + 1.7f + 0.38f)
+            bottomUnits = max(bottomUnits, -step / 2f + 0.38f)
+        }
+        val available = (h - topInset - bottomInset).coerceAtLeast(1f)
+        val lineGap = minOf(h * 0.105f, available / (topUnits + bottomUnits))
+        val staffCenter = topInset + (available - (topUnits + bottomUnits) * lineGap) / 2f + topUnits * lineGap
+        val headX = lineGap * 0.52f
+        val headY = lineGap * 0.33f
+        val stemX = headX * 0.9f
+        val stemWidth = max(dp(0.9f), lineGap * 0.06f)
+        val ledgerHalf = headX * 1.5f
+        val sideInset = minOf(dp(12f), w * 0.04f)
         for (i in -2..2) {
             val y = staffCenter + i * lineGap
-            canvas.drawLine(20f, y, w - 20f, y, linePaint)
+            canvas.drawLine(sideInset, y, w - sideInset, y, linePaint)
         }
 
         val cursorX = w * 0.34f
-        canvas.drawLine(cursorX, 20f, cursorX, h - 20f, cursorPaint)
-        canvas.drawText("NOW", cursorX + 8f, 42f, textPaint)
+        canvas.drawLine(cursorX, topInset, cursorX, h - bottomInset, cursorPaint)
+        textPaint.color = color(R.color.cursor)
+        val captionBaseline = minOf(-textPaint.fontMetrics.top + dp(3f), topInset - textPaint.fontMetrics.bottom)
+        canvas.drawText(cursorLabel, cursorX + dp(5f), captionBaseline, textPaint)
 
-        val localScore = score ?: run {
-            canvas.drawText("Load a MIDI file", 32f, h * 0.82f, textPaint)
+        if (localScore == null) {
+            textPaint.color = color(R.color.muted)
+            textPaint.textAlign = Paint.Align.CENTER
+            val emptyText = android.text.TextUtils.ellipsize(emptyLabel,
+                textPaint, (w - sideInset * 2f).coerceAtLeast(1f),
+                android.text.TextUtils.TruncateAt.END).toString()
+            canvas.drawText(emptyText, w / 2f, (h - bottomInset).coerceAtLeast(captionBaseline), textPaint)
+            textPaint.textAlign = Paint.Align.LEFT
             return
         }
 
         val pixelsPerQuarterBeat = pixelsPerQuarterBeat()
-        val pastWindow = 2.5
-        val futureWindow = 8.0
-        val minBeat = quarterBeatPosition - pastWindow
-        val maxBeat = quarterBeatPosition + futureWindow
-        val selectedNotes = localScore.visibleNotes(trackSelection)
-        val octaveShift = displayOctaveShift(selectedNotes)
-        val visibleNotes = selectedNotes.asSequence()
-            .filter {
-                val beat = localScore.noteStartBeat(it)
-                beat in minBeat..maxBeat
-            }
-            .toList()
-        val labelSize = max(16f, 14f * resources.displayMetrics.scaledDensity)
-        val labelGap = max(4f, 3f * resources.displayMetrics.density)
-        val obstaclePadding = max(3f, 2f * resources.displayMetrics.density)
+        val labelSize = 13f * scaledDensity
+        val labelGap = dp(3f)
+        val obstaclePadding = dp(2f)
         noteLabelPaint.textSize = labelSize
         val updatedFontMetrics = noteLabelPaint.fontMetrics
-        val minBaseline = max(0f, -updatedFontMetrics.top + labelGap)
+        val minBaseline = topInset - updatedFontMetrics.top + labelGap
         val notesToDraw = visibleNotes
             .map { note ->
                 val startBeat = localScore.noteStartBeat(note)
@@ -208,27 +242,33 @@ class ScoreStaffView @JvmOverloads constructor(
         }
 
         if (octaveShift != 0) {
-            canvas.drawText(if (octaveShift < 0) "8va" else "8vb", 28f, 42f, textPaint)
+            textPaint.color = color(R.color.muted)
+            canvas.drawText(if (octaveShift < 0) "8va" else "8vb", sideInset, captionBaseline, textPaint)
         }
 
         notesToDraw.forEach { (note, x, y) ->
             val startBeat = localScore.noteStartBeat(note)
-            val paint = if (startBeat <= quarterBeatPosition + 0.05) notePaint else futurePaint
+            val paint = when {
+                startBeat <= quarterBeatPosition && quarterBeatPosition < localScore.noteEndBeat(note) -> notePaint
+                startBeat < quarterBeatPosition -> pastPaint
+                else -> futurePaint
+            }
+            paint.strokeWidth = stemWidth
             val staffStep = diatonicStepFromB4(note.pitch) + octaveShift * 7
             if (staffStep > 4) {
                 for (ledgerStep in 6..staffStep step 2) {
                     val ledgerY = staffCenter - ledgerStep * (lineGap / 2f)
-                    canvas.drawLine(x - 16f, ledgerY, x + 16f, ledgerY, linePaint)
+                    canvas.drawLine(x - ledgerHalf, ledgerY, x + ledgerHalf, ledgerY, linePaint)
                 }
             } else if (staffStep < -4) {
                 for (ledgerStep in -6 downTo staffStep step 2) {
                     val ledgerY = staffCenter - ledgerStep * (lineGap / 2f)
-                    canvas.drawLine(x - 16f, ledgerY, x + 16f, ledgerY, linePaint)
+                    canvas.drawLine(x - ledgerHalf, ledgerY, x + ledgerHalf, ledgerY, linePaint)
                 }
             }
-            val oval = RectF(x - 11f, y - 7f, x + 11f, y + 7f)
+            val oval = RectF(x - headX, y - headY, x + headX, y + headY)
             canvas.drawOval(oval, paint)
-            canvas.drawLine(x + 10f, y, x + 10f, y - lineGap * 1.7f, paint)
+            canvas.drawLine(x + stemX, y, x + stemX, y - lineGap * 1.7f, paint)
         }
 
         if (notesToDraw.isNotEmpty()) {
@@ -242,15 +282,15 @@ class ScoreStaffView @JvmOverloads constructor(
                 notesToDraw.forEach { (_, noteX, noteY) ->
                     if (overlaps(
                             bounds.left, bounds.top, bounds.right, bounds.bottom,
-                            noteX - 11f - obstaclePadding,
-                            noteY - 7f - obstaclePadding,
-                            noteX + 11f + obstaclePadding,
-                            noteY + 7f + obstaclePadding,
+                            noteX - headX - obstaclePadding,
+                            noteY - headY - obstaclePadding,
+                            noteX + headX + obstaclePadding,
+                            noteY + headY + obstaclePadding,
                         ) || overlaps(
                             bounds.left, bounds.top, bounds.right, bounds.bottom,
-                            noteX + 10f - 1f - obstaclePadding,
+                            noteX + stemX - stemWidth / 2f - obstaclePadding,
                             noteY - lineGap * 1.7f - obstaclePadding,
-                            noteX + 10f + 1f + obstaclePadding,
+                            noteX + stemX + stemWidth / 2f + obstaclePadding,
                             noteY + obstaclePadding,
                         )
                     ) return true

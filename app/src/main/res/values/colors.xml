@@ -1,6 +1,13 @@
 <resources>
     <color name="black">#000000</color>
     <color name="white">#FFFFFF</color>
-    <color name="surface">#FAFAFA</color>
-    <color name="surface_alt">#EEEEEE</color>
+    <color name="surface">#F4F6F5</color>
+    <color name="surface_alt">#E8EFEC</color>
+    <color name="ink">#202C29</color>
+    <color name="muted">#52615B</color>
+    <color name="accent">#006B57</color>
+    <color name="cursor">#A32945</color>
+    <color name="warning">#8A4B08</color>
+    <color name="staff_line">#80918A</color>
+    <color name="past_note">#89948F</color>
 </resources>
