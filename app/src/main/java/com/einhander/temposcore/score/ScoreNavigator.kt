@@ -5,6 +5,8 @@ import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.midi.MidiTrackInfo
 import kotlin.math.floor
 
+data class MeasureBoundary(val quarterBeat: Double, val bar: Int, val numerator: Int, val denominator: Int)
+
 object ScoreNavigator {
     data class BarBeat(val bar: Int, val beat: Double, val numerator: Int, val denominator: Int)
 
@@ -32,36 +34,71 @@ object ScoreNavigator {
     }
 
     fun barBeatAt(score: MidiScore, quarterBeat: Double): BarBeat {
-        val events = score.timeSignatures.sortedBy { it.tick }
-        var accumulatedBars = 0
-        var segmentStartQuarter = 0.0
+        val segments = meterSegments(score)
+        val segment = segments.lastOrNull { it.start <= quarterBeat } ?: segments.first()
+        val offset = (quarterBeat - segment.start).coerceAtLeast(0.0)
+        val barsIntoSegment = floor(offset / segment.barLength + 1e-9).toInt()
+        val withinBarQuarter = offset - barsIntoSegment * segment.barLength
+        val notatedBeat = withinBarQuarter / (4.0 / segment.denominator) + 1.0
+        return BarBeat(
+            bar = segment.firstBar + barsIntoSegment,
+            beat = notatedBeat,
+            numerator = segment.numerator,
+            denominator = segment.denominator,
+        )
+    }
+
+    /** Meter change starts a fresh bar; any preceding partial bar counts as one. */
+    fun measureBoundaries(score: MidiScore, fromBeat: Double, toBeat: Double): List<MeasureBoundary> {
+        if (fromBeat > toBeat) return emptyList()
+        val segments = meterSegments(score)
+        val result = ArrayList<MeasureBoundary>()
+        for (index in segments.indices) {
+            val segment = segments[index]
+            if (segment.start > toBeat) break
+            val segmentEnd = segments.getOrNull(index + 1)?.start ?: Double.POSITIVE_INFINITY
+            val firstN = maxOf(0, floor((fromBeat - segment.start) / segment.barLength + 1e-9).toInt())
+            val lastN = floor((minOf(toBeat, segmentEnd) - segment.start) / segment.barLength + 1e-9).toInt()
+            if (lastN < firstN) continue
+            for (n in firstN..lastN) {
+                val beat = segment.start + n * segment.barLength
+                if (beat >= fromBeat - 1e-9 && (index == segments.lastIndex || beat < segmentEnd - 1e-9)) {
+                    result += MeasureBoundary(beat, segment.firstBar + n, segment.numerator, segment.denominator)
+                }
+            }
+        }
+        return result
+    }
+
+    private data class MeterSegment(
+        val start: Double, val firstBar: Int, val numerator: Int, val denominator: Int,
+    ) {
+        val barLength: Double get() = numerator * 4.0 / denominator
+    }
+
+    private fun meterSegments(score: MidiScore): List<MeterSegment> {
+        // Stable sort preserves event order; last event at duplicate tick wins.
+        val events = score.timeSignatures.withIndex().sortedWith(compareBy({ it.value.tick }, { it.index }))
+        val segments = arrayListOf(MeterSegment(0.0, 1, 4, 4))
+        var start = 0.0
+        var bar = 1
         var numerator = 4
         var denominator = 4
-
-        for (event in events) {
-            val eventQuarter = score.tickToQuarterBeats(event.tick)
-            if (eventQuarter > quarterBeat) break
-            if (eventQuarter > segmentStartQuarter) {
-                val oldBarLength = numerator * 4.0 / denominator
-                accumulatedBars += floor((eventQuarter - segmentStartQuarter) / oldBarLength + 1e-9).toInt()
+        for ((_, event) in events) {
+            val eventBeat = score.tickToQuarterBeats(event.tick)
+            if (eventBeat < 0.0) continue
+            if (eventBeat > start) {
+                val oldLength = numerator * 4.0 / denominator
+                val completeBars = floor((eventBeat - start) / oldLength + 1e-9).toInt()
+                bar += maxOf(1, if (completeBars * oldLength < eventBeat - start - 1e-9) completeBars + 1 else completeBars)
+                start = eventBeat
             }
-            segmentStartQuarter = eventQuarter
             numerator = event.numerator
             denominator = event.denominator
+            if (segments.last().start == start) segments.removeAt(segments.lastIndex)
+            segments += MeterSegment(start, bar, numerator, denominator)
         }
-
-        val barLengthQuarter = numerator * 4.0 / denominator
-        val notatedBeatQuarter = 4.0 / denominator
-        val offset = (quarterBeat - segmentStartQuarter).coerceAtLeast(0.0)
-        val barsIntoSegment = floor(offset / barLengthQuarter + 1e-9).toInt()
-        val withinBarQuarter = offset - barsIntoSegment * barLengthQuarter
-        val notatedBeat = withinBarQuarter / notatedBeatQuarter + 1.0
-        return BarBeat(
-            bar = accumulatedBars + barsIntoSegment + 1,
-            beat = notatedBeat,
-            numerator = numerator,
-            denominator = denominator,
-        )
+        return segments.ifEmpty { listOf(MeterSegment(0.0, 1, 4, 4)) }
     }
 
     fun pitchName(pitch: Int, naming: NoteNaming = NoteNaming.Letters): String {

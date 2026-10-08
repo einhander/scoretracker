@@ -10,4 +10,10 @@
     <color name="warning">#8A4B08</color>
     <color name="staff_line">#80918A</color>
     <color name="past_note">#89948F</color>
+    <color name="staff_bar">#768780</color>
+    <color name="active_note">#0075B9</color>
+    <color name="future_ribbon">#C9CECC</color>
+    <color name="active_ribbon">#A9D8F2</color>
+    <color name="active_elapsed_ribbon">#79BFE6</color>
+    <color name="past_ribbon">#E0E4E2</color>
 </resources>

@@ -23,6 +23,7 @@ import com.einhander.temposcore.midi.MidiFileParser
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.NoteNaming
+import com.einhander.temposcore.score.NoteStartGroup
 import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
@@ -116,6 +117,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             if (nativeInitialized) NativeAudioBridge.setManualPosition(position)
             updateUiFromTransport()
         }
+        binding.scoreView.onNoteGroupsRequested = { groups -> showNoteGroups(groups) }
 
         binding.loadMidiButton.setOnClickListener {
             openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
@@ -507,6 +509,44 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             }
         }
         popup.show()
+    }
+
+    /** Full, scrollable fallback for chord labels: never ellipsize or substitute live BPM. */
+    @Suppress("DEPRECATION")
+    private fun showNoteGroups(groups: List<NoteStartGroup>) {
+        val localScore = score ?: return
+        if (groups.isEmpty()) return
+        val details = buildString {
+            append(getString(R.string.staff_details_hint))
+            for (group in groups) {
+                append("\n\n")
+                append(getString(R.string.staff_group_header, group.startBeat,
+                    group.uniquePitches.joinToString(" · ") { ScoreNavigator.pitchName(it, noteNaming) }))
+                for (note in group.notes) {
+                    append("\n")
+                    append(getString(R.string.staff_note_details,
+                        ScoreNavigator.pitchName(note.pitch, noteNaming),
+                        note.durationTicks.toDouble() / localScore.ppq,
+                        localScore.noteEndBeat(note), note.track + 1, note.channel + 1))
+                }
+            }
+        }
+        val padding = (16f * resources.displayMetrics.density).toInt()
+        val text = android.widget.TextView(this).apply {
+            this.text = details
+            textSize = 16f
+            setPadding(padding, padding, padding, padding)
+            setTextIsSelectable(true)
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(text) }
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.staff_details_title)
+            .setView(scroll)
+            .setPositiveButton(R.string.staff_details_close, null)
+            .show()
+        // A focused dialog has its own decor; retain the activity's sticky
+        // immersive policy instead of permanently revealing navigation bars.
+        dialog.window?.decorView?.systemUiVisibility = window.decorView.systemUiVisibility
     }
 
     private fun setNoteNaming(value: NoteNaming) {
