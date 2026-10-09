@@ -13,6 +13,8 @@ struct BeatObservation {
     float rms = 0.0f;
     bool tempoValid = false;
     bool phaseValid = false;
+    double rawDetectedBpm = 0.0;
+    double selectedLag = 0.0;
 };
 
 /** Fixed-storage multiband spectral-flux tempo estimator. Phase remains intentionally disabled. */
@@ -44,6 +46,9 @@ private:
     int32_t evaluationCountdown_ = 0;
     float activity_ = 0.0f;
     float confidence_ = 0.0f;
+    double rawDetectedBpm_ = 0.0;
+    double selectedLag_ = 0.0;
+    double interpolatedDetectedBpm_ = 0.0;
 };
 
 } // namespace temposcore

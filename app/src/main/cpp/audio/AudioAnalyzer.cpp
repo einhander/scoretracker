@@ -34,6 +34,17 @@ bool AudioAnalyzer::start(int32_t sampleRate, double expectedBpm) {
     historyLookupMisses_.store(0, std::memory_order_relaxed);
     historyOverflowEvents_.store(0, std::memory_order_relaxed);
     continuityResets_.store(0, std::memory_order_relaxed);
+    diagnosticDetectedBpm_.store(0.0, std::memory_order_relaxed);
+    diagnosticRawDetectedBpm_.store(0.0, std::memory_order_relaxed);
+    diagnosticSelectedTempoLag_.store(0.0, std::memory_order_relaxed);
+    diagnosticBeatConfidence_.store(0.0f, std::memory_order_relaxed);
+    diagnosticDtwBestCost_.store(0.0, std::memory_order_relaxed);
+    diagnosticDtwSecondCost_.store(0.0, std::memory_order_relaxed);
+    diagnosticDtwBestQuarterBeat_.store(0.0, std::memory_order_relaxed);
+    diagnosticDtwSecondQuarterBeat_.store(0.0, std::memory_order_relaxed);
+    diagnosticDtwLiveFirstFrame_.store(0, std::memory_order_relaxed);
+    diagnosticDtwLiveLastFrame_.store(0, std::memory_order_relaxed);
+    diagnosticDtwValidFrameFraction_.store(0.0, std::memory_order_relaxed);
     activeStreamEpoch_ = 0;
     diagnosticStreamEpoch_.store(0, std::memory_order_relaxed);
     activeContinuityEpoch_ = 0;
@@ -158,6 +169,10 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
         const auto bands = flux_->process(stft_->magnitude());
         const BeatObservation tempo = beatTracker_.processFlux(
             bands, stft_->frameEnergy(), static_cast<int64_t>(centerSourceFrame));
+        diagnosticDetectedBpm_.store(tempo.detectedBpm, std::memory_order_relaxed);
+        diagnosticRawDetectedBpm_.store(tempo.rawDetectedBpm, std::memory_order_relaxed);
+        diagnosticSelectedTempoLag_.store(tempo.selectedLag, std::memory_order_relaxed);
+        diagnosticBeatConfidence_.store(tempo.confidence, std::memory_order_relaxed);
         const bool currentAfterDsp = resetRequest_.load(std::memory_order_acquire) == batchEpoch &&
             (!transport_ || transport_->positionGeneration() == span.positionGeneration);
         if (transport_ && currentAfterDsp) transport_->submitTempoObservation(tempo);
@@ -215,6 +230,14 @@ void AudioAnalyzer::run(int32_t /*sampleRate*/) noexcept {
             const auto matcherStart = std::chrono::steady_clock::now();
             PositionObservation observation = matcher_->update(
                 featureRing_, historicalPoint.position, span.positionGeneration);
+            const auto matchDiagnostics = matcher_->diagnostics();
+            diagnosticDtwBestCost_.store(matchDiagnostics.bestCost, std::memory_order_relaxed);
+            diagnosticDtwSecondCost_.store(matchDiagnostics.secondCost, std::memory_order_relaxed);
+            diagnosticDtwBestQuarterBeat_.store(matchDiagnostics.bestQuarterBeat, std::memory_order_relaxed);
+            diagnosticDtwSecondQuarterBeat_.store(matchDiagnostics.secondQuarterBeat, std::memory_order_relaxed);
+            diagnosticDtwLiveFirstFrame_.store(matchDiagnostics.liveFirstFrame, std::memory_order_relaxed);
+            diagnosticDtwLiveLastFrame_.store(matchDiagnostics.liveLastFrame, std::memory_order_relaxed);
+            diagnosticDtwValidFrameFraction_.store(matchDiagnostics.validFrameFraction, std::memory_order_relaxed);
             observation.streamEpoch = frame.streamEpoch;
             observation.continuityEpoch = frame.continuityEpoch;
             observation.observationFrame = centerSourceFrame;

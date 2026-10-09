@@ -1,8 +1,10 @@
 #include "position/PositionMatcher.h"
+#include "position/DtwMatcher.h"
 #include "position/ScoreReference.h"
 #include "transport/LiveTransport.h"
 #include "tests/host/test_main.h"
 #include <cmath>
+#include <algorithm>
 using namespace temposcore;
 
 // A reference with a UNIQUE (non-repeated) opening section so a strong unique
@@ -60,6 +62,83 @@ static FeatureRing makeSilent(size_t count) {
         q.push(frame);
     }
     return q;
+}
+
+void test_dtw_invalid_live_frames_are_neutral_not_catastrophic() {
+    auto reference = makeUniqueRef();
+    AudioFeatureFrame invalid;
+    ScoreFeatureFrame note = reference.frames()[0];
+    ScoreFeatureFrame rest{};
+    const float noteCost = DtwMatcher::frameDistance(invalid, note);
+    const float restCost = DtwMatcher::frameDistance(invalid, rest);
+    CHECK(noteCost == 0.0f);
+    CHECK(restCost == 0.0f);
+
+    FeatureRing mixed;
+    mixed.setSampleRate(48000);
+    for (size_t i = 0; i < 60; ++i) {
+        AudioFeatureFrame frame;
+        frame.centerAudioFrame = static_cast<int64_t>(i) * 4800;
+        if (i % 4 != 0) {
+            frame.valid = true;
+            frame.chroma = reference.frames()[i].chroma;
+            frame.onset = reference.frames()[i].onset;
+        }
+        mixed.push(frame);
+    }
+    DtwMatcher dtw(reference);
+    const auto mixedMatch = dtw.global(mixed);
+    CHECK(mixedMatch.matchQuality > 0.0f);
+    CHECK(dtw.diagnostics().validFrameFraction > 0.70f);
+    CHECK(dtw.diagnostics().bestCost < 10.0f);
+
+    auto allInvalid = makeSilent(60);
+    PositionMatcher matcher(reference);
+    matcher.begin();
+    for (int i = 0; i < 5; ++i) matcher.update(allInvalid, 0.0);
+    CHECK(matcher.state() != PositionTrackingState::Locked);
+
+    FeatureRing wrong;
+    wrong.setSampleRate(48000);
+    for (size_t i = 0; i < 60; ++i) {
+        AudioFeatureFrame frame;
+        frame.valid = true;
+        frame.centerAudioFrame = static_cast<int64_t>(i) * 4800;
+        frame.chroma[(reference.frames()[i].chroma[0] > 0.5f) ? 1 : 0] = 1.0f;
+        wrong.push(frame);
+    }
+    matcher.begin();
+    for (int i = 0; i < 5; ++i) matcher.update(wrong, 0.0);
+    CHECK(matcher.state() != PositionTrackingState::Locked);
+}
+
+void test_t7_reference_mapping_uses_absolute_score_beats_and_tenth_second_grid() {
+    MidiData midi;
+    midi.ppq = 480;
+    midi.totalTicks = 384 * 480;
+    midi.tempos.push_back({0, 487805});
+    ScoreReference reference;
+    CHECK(buildScoreReference(midi, reference));
+    const auto nearest = [&](double seconds) {
+        const auto& frames = reference.frames();
+        auto it = std::lower_bound(frames.begin(), frames.end(), seconds,
+            [](const ScoreFeatureFrame& frame, double t) { return frame.nominalSeconds < t; });
+        if (it == frames.begin()) return size_t{0};
+        if (it == frames.end()) return frames.size() - 1;
+        const auto prev = it - 1;
+        return static_cast<size_t>(seconds - prev->nominalSeconds <= it->nominalSeconds - seconds
+            ? prev - frames.begin() : it - frames.begin());
+    };
+    for (const int rate : {44100, 48000}) {
+        for (const uint64_t frame : {uint64_t{0}, uint64_t{1024}, uint64_t{44100 * 20}, uint64_t{48000 * 60}}) {
+            const double truthBeat = 8.0 + static_cast<double>(frame) / rate * (60000000.0 / 487805.0) / 60.0;
+            const double truthSeconds = truthBeat * 60.0 / (60000000.0 / 487805.0);
+            const auto& mapped = reference.frames()[nearest(truthSeconds)];
+            CHECK(std::abs(mapped.nominalSeconds - truthSeconds) <= 0.050001);
+            CHECK(std::abs(mapped.quarterBeatPosition - truthBeat) <= (60000000.0 / 487805.0) * 0.050001 / 60.0 + 1e-6);
+            if (frame == 0) CHECK_NEAR(mapped.quarterBeatPosition, 8.0, 0.11);
+        }
+    }
 }
 static BeatObservation silentBeat() {
     BeatObservation b;
@@ -252,6 +331,8 @@ static void test_transport_tempo_target_and_fallback() {
 }
 
 REGISTER_TEST(test_transport_tempo_target_and_fallback);
+REGISTER_TEST(test_dtw_invalid_live_frames_are_neutral_not_catastrophic);
+REGISTER_TEST(test_t7_reference_mapping_uses_absolute_score_beats_and_tenth_second_grid);
 REGISTER_TEST(test_transport_offset_slew_keeps_advancing);
 REGISTER_TEST(test_matcher_acquire_lock);
 REGISTER_TEST(test_matcher_degrade_reacquire);

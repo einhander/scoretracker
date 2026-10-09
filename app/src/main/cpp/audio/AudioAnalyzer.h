@@ -40,6 +40,17 @@ struct AudioAnalyzerDiagnostics {
     uint64_t historyLookupMisses = 0;
     uint64_t historyOverflowEvents = 0;
     uint64_t continuityResets = 0;
+    double detectedBpm = 0.0;
+    double rawDetectedBpm = 0.0;
+    double selectedTempoLag = 0.0;
+    float beatConfidence = 0.0f;
+    double dtwBestCost = 0.0;
+    double dtwSecondCost = 0.0;
+    double dtwBestQuarterBeat = 0.0;
+    double dtwSecondQuarterBeat = 0.0;
+    uint64_t dtwLiveFirstFrame = 0;
+    uint64_t dtwLiveLastFrame = 0;
+    double dtwValidFrameFraction = 0.0;
 };
 
 class AudioAnalyzer final {
@@ -84,6 +95,17 @@ public:
         d.historyLookupMisses = historyLookupMisses_.load(std::memory_order_relaxed);
         d.historyOverflowEvents = historyOverflowEvents_.load(std::memory_order_relaxed);
         d.continuityResets = continuityResets_.load(std::memory_order_relaxed);
+        d.detectedBpm = diagnosticDetectedBpm_.load(std::memory_order_relaxed);
+        d.rawDetectedBpm = diagnosticRawDetectedBpm_.load(std::memory_order_relaxed);
+        d.selectedTempoLag = diagnosticSelectedTempoLag_.load(std::memory_order_relaxed);
+        d.beatConfidence = diagnosticBeatConfidence_.load(std::memory_order_relaxed);
+        d.dtwBestCost = diagnosticDtwBestCost_.load(std::memory_order_relaxed);
+        d.dtwSecondCost = diagnosticDtwSecondCost_.load(std::memory_order_relaxed);
+        d.dtwBestQuarterBeat = diagnosticDtwBestQuarterBeat_.load(std::memory_order_relaxed);
+        d.dtwSecondQuarterBeat = diagnosticDtwSecondQuarterBeat_.load(std::memory_order_relaxed);
+        d.dtwLiveFirstFrame = diagnosticDtwLiveFirstFrame_.load(std::memory_order_relaxed);
+        d.dtwLiveLastFrame = diagnosticDtwLiveLastFrame_.load(std::memory_order_relaxed);
+        d.dtwValidFrameFraction = diagnosticDtwValidFrameFraction_.load(std::memory_order_relaxed);
         return d;
     }
     // Callers must retry in a loop when this returns false.
@@ -145,6 +167,12 @@ private:
     std::atomic<uint64_t> historyLookupMisses_{0};
     std::atomic<uint64_t> historyOverflowEvents_{0};
     std::atomic<uint64_t> continuityResets_{0};
+    std::atomic<double> diagnosticDetectedBpm_{0.0}, diagnosticRawDetectedBpm_{0.0}, diagnosticSelectedTempoLag_{0.0};
+    std::atomic<float> diagnosticBeatConfidence_{0.0f};
+    std::atomic<double> diagnosticDtwBestCost_{0.0}, diagnosticDtwSecondCost_{0.0};
+    std::atomic<double> diagnosticDtwBestQuarterBeat_{0.0}, diagnosticDtwSecondQuarterBeat_{0.0};
+    std::atomic<uint64_t> diagnosticDtwLiveFirstFrame_{0}, diagnosticDtwLiveLastFrame_{0};
+    std::atomic<double> diagnosticDtwValidFrameFraction_{0.0};
     int32_t sampleRate_ = 48000;
     double expectedBpm_ = 120.0;
 };

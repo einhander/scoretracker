@@ -53,6 +53,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var lastPresentationNanos = 0L
     private var lastNativeRunning = false
     private var lastPositionState: PositionTrackingState? = null
+    private var lastDiagnosticSampleNs = 0L
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
@@ -424,6 +425,15 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
 
         binding.scoreView.quarterBeatPosition = pos
+        if (BuildConfig.DEBUG && testPlaying) {
+            val diagnosticNow = System.nanoTime()
+            if (diagnosticNow - lastDiagnosticSampleNs >= 250_000_000L) {
+                PlaybackDiagnostics.currentSession()?.let { diagnosticSession ->
+                    PlaybackDiagnostics.recordDisplay(diagnosticSession, diagnosticNow, authoritativePos, pos)
+                }
+                lastDiagnosticSampleNs = diagnosticNow
+            }
+        }
         binding.tempoText.text = getString(R.string.midi_tempo, expectedBpm)
         binding.liveTempoText.text = getString(R.string.live_tempo,
             if (state.detectedBpm > 1.0) String.format(Locale.getDefault(), "%.1f", state.detectedBpm) else "—")

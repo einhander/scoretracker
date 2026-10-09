@@ -81,6 +81,44 @@ static void test_silence_clears_prior_lock() {
     CHECK(!o.tempoValid); CHECK_NEAR(o.detectedBpm, 0.0, 0.01);
 }
 
+static BeatObservation runContinuousPhase(double bpm, int sampleRate, float subdivision = 0.0f,
+                                         float accent = 0.0f, float quietEverySeconds = 0.0f) {
+    BeatTracker tracker;
+    constexpr int hop = 1024;
+    tracker.configure(bpm, sampleRate, hop);
+    const double rate = static_cast<double>(sampleRate) / hop;
+    BeatObservation observation;
+    for (int n = 0; n < static_cast<int>(18 * rate); ++n) {
+        const double time = n / rate;
+        const double beatPosition = time * bpm / 60.0;
+        const bool attack = std::floor(beatPosition) != std::floor((time - 1.0 / rate) * bpm / 60.0);
+        const double halfPosition = beatPosition * 2.0;
+        const bool subAttack = subdivision > 0.0f && std::floor(halfPosition) !=
+            std::floor((time - 1.0 / rate) * bpm / 30.0) && !attack;
+        const bool quiet = quietEverySeconds > 0.0 && std::fmod(time, static_cast<double>(quietEverySeconds)) > quietEverySeconds * 0.75;
+        float hit = attack ? 1.0f : (subAttack ? subdivision : 0.0f);
+        if (accent > 0.0f && attack && std::fmod(beatPosition, 4.0) < bpm / 60.0 / rate) hit += accent;
+        if (quiet) hit *= 0.08f;
+        observation = tracker.processFlux({hit, hit * 0.8f, hit * 0.5f}, hit > 0 ? 0.03f : 0.0002f,
+                                          static_cast<int64_t>(n) * hop);
+    }
+    return observation;
+}
+
+static void test_fractional_lag_refinement_continuous_phase_matrix() {
+    for (const int sampleRate : {44100, 48000}) {
+        for (const double bpm : {90.0, 110.0, 120.0, 123.0, 125.0, 140.0}) {
+            const auto o = runContinuousPhase(bpm, sampleRate);
+            CHECK(o.tempoValid);
+            CHECK(o.selectedLag > 0.0);
+            CHECK_NEAR(o.detectedBpm, bpm, 7.0);
+        }
+        const auto accented = runContinuousPhase(120.0, sampleRate, 0.4f, 0.5f, 7.0f);
+        CHECK(accented.tempoValid);
+        CHECK(accented.detectedBpm > 70.0 && accented.detectedBpm < 170.0);
+    }
+}
+
 static void test_four_four_accent_does_not_lock_half_time() {
     BeatTracker tracker;
     tracker.configure(120.0, 48000, 1024);
@@ -140,3 +178,4 @@ REGISTER_TEST(test_silence);
 REGISTER_TEST(test_amplitude_variation);
 REGISTER_TEST(test_delayed_lock_and_nonfinite_inputs);
 REGISTER_TEST(test_silence_clears_prior_lock);
+REGISTER_TEST(test_fractional_lag_refinement_continuous_phase_matrix);

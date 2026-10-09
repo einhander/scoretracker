@@ -37,6 +37,7 @@ public:
     PositionObservation update(const FeatureRing& f, double predicted = 0.0,
                                uint64_t generation = 0) noexcept;
     PositionTrackingState state() const noexcept { return state_; }
+    DtwMatcher::Diagnostics diagnostics() const noexcept { return dtw_.diagnostics(); }
 private:
     // Coarse (0.5 s step) chroma pre-filter -> top-K=8 -> fine DTW.
     PositionObservation acquireGlobal(const FeatureRing& f, double predicted) noexcept;

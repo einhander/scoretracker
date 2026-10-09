@@ -32,6 +32,18 @@ public:
     // on the score reference nominal-time axis.
     PositionObservation localOn(const FeatureRing& l, double predicted, double radiusSec) noexcept;
     static float frameDistance(const AudioFeatureFrame&, const ScoreFeatureFrame&) noexcept;
+    struct Diagnostics {
+        float bestCost = 0.0f;
+        float secondCost = 0.0f;
+        uint64_t liveFirstFrame = 0;
+        uint64_t liveLastFrame = 0;
+        double bestReferenceSeconds = 0.0;
+        double bestQuarterBeat = 0.0;
+        double secondQuarterBeat = 0.0;
+        float validFrameFraction = 0.0f;
+        bool valid = false;
+    };
+    Diagnostics diagnostics() const noexcept { return diagnostics_; }
 private:
     PositionObservation search(const FeatureRing& l, double predicted, bool localSearch,
                                double radiusSec, const size_t* startList, size_t startCount) noexcept;
@@ -39,5 +51,6 @@ private:
     static constexpr size_t MaxBand = 301;
     mutable std::array<AudioFeatureFrame, FeatureRing::Capacity> live_{};
     std::array<float, FeatureRing::Capacity * MaxBand> dp_{};
+    Diagnostics diagnostics_{};
 };
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.media.AudioTimestamp
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -12,6 +13,7 @@ import android.os.Handler
 import android.os.Looper
 import java.nio.ByteOrder
 import java.util.Collections
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
 /**
@@ -28,7 +30,12 @@ class TestAudioPlayer(
     private val context: Context,
     private val listener: Listener,
 ) {
-    private class PlaybackRun(val uri: Uri, val startUs: Long, val sessionToken: Long) {
+    private class PlaybackRun(
+        val uri: Uri,
+        val startUs: Long,
+        val sessionToken: Long,
+        val diagnostics: PlaybackDiagnostics.Session?,
+    ) {
         val pauseLock = Object()
         @Volatile var stopRequested = false
         @Volatile var paused = false
@@ -53,6 +60,7 @@ class TestAudioPlayer(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val playbackLock = Any()
+    private val diagnosticEpoch = AtomicLong(0L)
     private val retiredRuns = Collections.newSetFromMap(java.util.IdentityHashMap<PlaybackRun, Boolean>())
     @Volatile private var sourceUri: Uri? = null
     @Volatile private var activeRun: PlaybackRun? = null
@@ -112,11 +120,17 @@ class TestAudioPlayer(
         publishState(State.Empty)
     }
 
+    /** Debug CSV payload; caller controls export and persistence. */
+    fun diagnosticCsv(): String? = if (BuildConfig.DEBUG) {
+        PlaybackDiagnostics.currentSnapshot()?.let(PlaybackDiagnostics::csv)
+    } else null
+
     private fun pause() {
         synchronized(playbackLock) {
             if (state != State.Playing) return
             val current = activeRun ?: return
             current.paused = true
+            if (BuildConfig.DEBUG) current.diagnostics?.let { PlaybackDiagnostics.paused(it, true) }
             try { current.audioTrack?.pause() } catch (_: IllegalStateException) { }
         }
         publishState(State.Paused)
@@ -127,6 +141,7 @@ class TestAudioPlayer(
             if (state != State.Paused) return
             val current = activeRun ?: return
             current.paused = false
+            if (BuildConfig.DEBUG) current.diagnostics?.let { PlaybackDiagnostics.paused(it, false) }
             try { current.audioTrack?.play() } catch (_: IllegalStateException) { }
             current
         }
@@ -140,7 +155,8 @@ class TestAudioPlayer(
             if (activeRun?.thread?.isAlive == true) return
             val token = NativeAudioBridge.newTestSessionToken()
             if (token == 0L) return
-            PlaybackRun(uri, startUs, token).also { session ->
+            val diagnostics = if (BuildConfig.DEBUG) PlaybackDiagnostics.start(token, diagnosticEpoch.incrementAndGet()) else null
+            PlaybackRun(uri, startUs, token, diagnostics).also { session ->
                 session.thread = Thread({ decodeAndPlay(session) }, "scoretracker-test-audio-$token")
                 activeRun = session
                 latestPlaybackToken = token
@@ -245,6 +261,9 @@ class TestAudioPlayer(
                         if (outputEncoding != AudioFormat.ENCODING_PCM_16BIT) {
                             error("Test mode expects 16-bit PCM from the MP3 decoder (got $outputEncoding)")
                         }
+                        if (BuildConfig.DEBUG) run.diagnostics?.let {
+                            PlaybackDiagnostics.setSampleRate(it, outputSampleRate)
+                        }
                         val newTrack = createAudioTrack(outputSampleRate, outputChannels, outputEncoding)
                         track = newTrack
                         run.audioTrack = newTrack
@@ -272,26 +291,33 @@ class TestAudioPlayer(
                             if (outputChannels <= 0 || outputSampleRate <= 0) {
                                 error("Invalid decoder output format")
                             }
+                            if (BuildConfig.DEBUG) run.diagnostics?.let {
+                                PlaybackDiagnostics.decoded(it, (info.size / (outputChannels * 2)).toLong(), info.presentationTimeUs)
+                            }
                             waitWhilePaused(run)
                             if (!run.stopRequested) {
                                 // Blocking write is the clock for the test source: decoding is
                                 // prevented from running through the entire MP3 at CPU speed.
                                 writeAll(run, outputTrack, pcm)
-                                if (!run.stopRequested) NativeAudioBridge.pushTestAudio(
-                                    run.sessionToken,
-                                    downmixToMono(pcm, outputChannels, outputEncoding),
-                                )
+                                if (!run.stopRequested) {
+                                    val mono = downmixToMono(pcm, outputChannels, outputEncoding)
+                                    NativeAudioBridge.pushTestAudio(run.sessionToken, mono)
+                                    if (BuildConfig.DEBUG) run.diagnostics?.let { PlaybackDiagnostics.pushed(it, mono.size.toLong()) }
+                                    if (BuildConfig.DEBUG) pollPlaybackClock(run, outputTrack)
+                                }
                                 if (!run.stopRequested) {
                                     publishProgressForRun(run, info.presentationTimeUs / 1000L)
                                 }
                             }
                         }
                         outputEos = (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                        if (BuildConfig.DEBUG && outputEos) run.diagnostics?.let(PlaybackDiagnostics::eos)
                         decoder.releaseOutputBuffer(outputIndex, false)
                     }
                 }
             }
         } catch (t: Throwable) {
+            if (BuildConfig.DEBUG) run.diagnostics?.let(PlaybackDiagnostics::error)
             if (!run.stopRequested && activeRun === run) {
                 mainHandler.post {
                     if (activeRun === run) listener.onTestAudioError(t.message ?: t.javaClass.simpleName)
@@ -306,6 +332,13 @@ class TestAudioPlayer(
             try { codec?.stop() } catch (_: Throwable) { }
             try { codec?.release() } catch (_: Throwable) { }
             try { extractor?.release() } catch (_: Throwable) { }
+            if (BuildConfig.DEBUG) run.diagnostics?.let {
+                try {
+                    PlaybackDiagnostics.export(java.io.File(context.filesDir, "diagnostics"), PlaybackDiagnostics.snapshot(it))
+                } catch (_: Throwable) {
+                    // Diagnostics export must not disrupt playback cleanup.
+                }
+            }
             val completedCurrentRun = synchronized(playbackLock) {
                 retiredRuns.remove(run)
                 if (activeRun === run) {
@@ -376,8 +409,24 @@ class TestAudioPlayer(
             val written = track.write(pcm, offset, pcm.size - offset, AudioTrack.WRITE_BLOCKING)
             if (written < 0) error("AudioTrack write failed: $written")
             if (written == 0) continue
+            if (BuildConfig.DEBUG) run.diagnostics?.let {
+                PlaybackDiagnostics.written(it, track.channelCount, 2, written)
+            }
             offset += written
         }
+    }
+
+    private fun pollPlaybackClock(run: PlaybackRun, track: AudioTrack) {
+        val stamp = AudioTimestamp()
+        try {
+            if (track.getTimestamp(stamp)) {
+                run.diagnostics?.let { PlaybackDiagnostics.timestamp(it, stamp.framePosition, stamp.nanoTime) }
+                return
+            }
+        } catch (_: IllegalStateException) {
+            // Track stopping; playback head remains best available estimate.
+        }
+        run.diagnostics?.let { PlaybackDiagnostics.fallbackHead(it, track.playbackHeadPosition) }
     }
 
     private fun downmixToMono(pcm: ByteArray, channels: Int, encoding: Int): FloatArray {

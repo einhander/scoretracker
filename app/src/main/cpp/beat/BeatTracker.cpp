@@ -18,6 +18,7 @@ void BeatTracker::configure(double expectedBpm, int32_t sampleRate, int32_t hopS
     history_.fill(0.0f); mean_.fill(0.0f); deviation_.fill(0.01f);
     historySize_ = historyWrite_ = 0;
     estimatedBpm_ = 0.0; confidence_ = 0.0f; activity_ = 0.0f;
+    rawDetectedBpm_ = 0.0; selectedLag_ = 0.0; interpolatedDetectedBpm_ = 0.0;
     evaluationCountdown_ = 0;
     lastCenterFrame_ = 0;
 }
@@ -93,19 +94,39 @@ double BeatTracker::evaluateTempo() noexcept {
         scores[lag] = score;
     }
     double best = 0.0, second = 0.0, chosen = 0.0;
+    int chosenLag = 0;
     for (int p = 0; p < peakCount; ++p) {
         const double score = scores[peaks[p]];
-        if (score > best) { second = best; best = score; chosen = featureRate_ * 60.0 / peaks[p]; }
+        if (score > best) { second = best; best = score; chosenLag = peaks[p]; }
         else if (score > second) second = score;
     }
-    if (chosen <= 0.0 || best <= 0.0) {
+    if (chosenLag <= 0 || best <= 0.0) {
         confidence_ = 0.0f;
+        rawDetectedBpm_ = 0.0;
+        selectedLag_ = 0.0;
         return 0.0;
     }
+    double fractionalLag = static_cast<double>(chosenLag);
+    // Refine only already-selected integer peak. Guard flat/convex/edge fits;
+    // this changes timing resolution, not candidate identity or peak ranking.
+    if (chosenLag > boundedMinLag && chosenLag < boundedMaxLag) {
+        const double left = acValues[chosenLag - 1];
+        const double center = acValues[chosenLag];
+        const double right = acValues[chosenLag + 1];
+        const double curvature = left - 2.0 * center + right;
+        if (std::isfinite(curvature) && curvature < -1.0e-9) {
+            const double offset = 0.5 * (left - right) / curvature;
+            if (std::isfinite(offset)) fractionalLag += std::clamp(offset, -0.5, 0.5);
+        }
+    }
+    rawDetectedBpm_ = featureRate_ * 60.0 / chosenLag;
+    interpolatedDetectedBpm_ = featureRate_ * 60.0 / fractionalLag;
+    selectedLag_ = fractionalLag;
     const float context = std::min(1.0f, static_cast<float>(historySize_ / (featureRate_ * 6.0)));
     const double uniqueness = peakCount >= 2 ? (best - second) : 0.0;
     confidence_ = std::clamp(static_cast<float>(0.45 * best + 0.9 * uniqueness + 0.35 * context), 0.0f, 1.0f);
     if (confidence_ < 0.28f) return 0.0;
+    chosen = interpolatedDetectedBpm_;
     if (estimatedBpm_ <= 0.0) estimatedBpm_ = chosen;
     else estimatedBpm_ = std::exp(0.75 * std::log(estimatedBpm_) + 0.25 * std::log(chosen));
     return estimatedBpm_;
@@ -127,8 +148,9 @@ BeatObservation BeatTracker::processFlux(const std::array<float, 3>& bands, floa
     historyWrite_ = (historyWrite_ + 1) % history_.size();
     historySize_ = std::min(historySize_ + 1, history_.size());
     if (--evaluationCountdown_ <= 0) { evaluateTempo(); evaluationCountdown_ = std::max(1, static_cast<int>(featureRate_ / 4.0)); }
-    if (activity_ < 0.02f) { estimatedBpm_ = 0.0; confidence_ = 0.0f; }
+    if (activity_ < 0.02f) { estimatedBpm_ = 0.0; confidence_ = 0.0f; rawDetectedBpm_ = 0.0; selectedLag_ = 0.0; interpolatedDetectedBpm_ = 0.0; }
     out.detectedBpm = estimatedBpm_; out.confidence = confidence_; out.rms = std::sqrt(safeEnergy);
+    out.rawDetectedBpm = rawDetectedBpm_; out.selectedLag = selectedLag_;
     out.tempoValid = estimatedBpm_ > 0.0 && confidence_ >= 0.28f;
     out.phaseValid = false; out.phaseCorrectionBeats = 0.0;
     lastCenterFrame_ = centerAudioFrame;

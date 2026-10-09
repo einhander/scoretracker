@@ -3,7 +3,11 @@
 #include <cmath>
 namespace temposcore {
 float DtwMatcher::frameDistance(const AudioFeatureFrame& a, const ScoreFeatureFrame& b) noexcept {
-    if (!a.valid) return 1e6f;
+    // An invalid live frame carries no pitch/onset evidence (silence, MIDI
+    // rest, or low-energy window). It must not act as a catastrophic mismatch;
+    // PositionMatcher separately penalizes valid-frame fraction and fail-closes
+    // all-invalid windows, so neutral cost cannot inflate lock confidence.
+    if (!a.valid) return 0.0f;
     float aa = 0, bb = 0, d = 0;
     for (int i = 0; i < 12; ++i) { aa += a.chroma[i] * a.chroma[i]; bb += b.chroma[i] * b.chroma[i]; d += a.chroma[i] * b.chroma[i]; }
     const float cosine = (aa > 0 && bb > 0) ? d / std::sqrt(aa * bb) : 0;
@@ -76,11 +80,17 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
                                       double radiusSec, const size_t* startList, size_t startCount) noexcept {
     const size_t n = l.copy(live_);
     PositionObservation o;
+    diagnostics_ = {};
+    if (n) {
+        diagnostics_.liveFirstFrame = live_[0].centerAudioFrame < 0 ? 0 : static_cast<uint64_t>(live_[0].centerAudioFrame);
+        diagnostics_.liveLastFrame = live_[n - 1].centerAudioFrame < 0 ? 0 : static_cast<uint64_t>(live_[n - 1].centerAudioFrame);
+    }
     o.globalMatch = !localSearch;
     if (!n) return o;
     const auto& ref = reference_.frames();
     size_t valid = 0;
     for (size_t i = 0; i < n; ++i) if (live_[i].valid) ++valid;
+    diagnostics_.validFrameFraction = static_cast<float>(valid) / static_cast<float>(n);
     if (valid < n / 2 || ref.empty()) return o;
 
     struct Cand { float cost; size_t s; size_t current; };
@@ -193,6 +203,12 @@ PositionObservation DtwMatcher::search(const FeatureRing& l, double predicted, b
             break;
         }
     }
+    diagnostics_.bestCost = bestCost;
+    diagnostics_.secondCost = second;
+    diagnostics_.bestReferenceSeconds = ref[bestCurrent].nominalSeconds;
+    diagnostics_.bestQuarterBeat = ref[bestCurrent].quarterBeatPosition;
+    if (topN > 1) diagnostics_.secondQuarterBeat = ref[top[1].current].quarterBeatPosition;
+    diagnostics_.valid = true;
     o.quarterBeatPosition = ref[bestCurrent].quarterBeatPosition;
     o.matchQuality = 1 / (1 + bestCost);
     o.ambiguityMargin = std::max(0.0f, second - bestCost);
