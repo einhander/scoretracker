@@ -24,6 +24,12 @@ data class TimeSignatureEvent(
     val denominator: Int,
 )
 
+data class KeySignatureEvent(
+    val tick: Long,
+    val sharpsFlats: Int,
+    val minor: Boolean,
+)
+
 data class MidiTrackInfo(
     val index: Int, val name: String?, val noteCount: Int,
     val pitchMin: Int?, val pitchMax: Int?, val channels: List<Int>,
@@ -37,6 +43,7 @@ data class MidiScore(
     val timeSignatures: List<TimeSignatureEvent>,
     val totalTicks: Long,
     val tracks: List<MidiTrackInfo>,
+    val keySignatures: List<KeySignatureEvent> = emptyList(),
 ) {
     val initialBpm: Double get() = tempoMap.firstOrNull()?.bpm ?: 120.0
     fun tickToQuarterBeats(tick: Long): Double = tick.toDouble() / ppq.toDouble()

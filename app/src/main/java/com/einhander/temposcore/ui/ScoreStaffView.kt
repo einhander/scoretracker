@@ -3,6 +3,7 @@ package com.einhander.temposcore.ui
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.text.TextPaint
 import android.text.TextUtils
@@ -15,9 +16,11 @@ import com.einhander.temposcore.R
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.BeatViewport
+import com.einhander.temposcore.score.AccidentalPreference
 import com.einhander.temposcore.score.MeasureBoundary
 import com.einhander.temposcore.score.NoteInterval
 import com.einhander.temposcore.score.NoteNaming
+import com.einhander.temposcore.score.NoteSpelling
 import com.einhander.temposcore.score.NoteStartGroup
 import com.einhander.temposcore.score.NoteTimeState
 import com.einhander.temposcore.score.ScoreNavigator
@@ -66,6 +69,25 @@ class ScoreStaffView @JvmOverloads constructor(
     private val markerHaloPaint = paint(R.color.white).apply { strokeWidth = dp(2.4f) }
     private val pastMarkerColor = color(R.color.muted)
     private val rect = RectF()
+    // Unit paths avoid missing Unicode/music glyphs on older Android fonts.
+    private val sharpPath = Path().apply {
+        moveTo(0.28f, -1f); lineTo(0.28f, 1f)
+        moveTo(0.72f, -1f); lineTo(0.72f, 1f)
+        moveTo(0f, -0.28f); lineTo(1f, -0.45f)
+        moveTo(0f, 0.45f); lineTo(1f, 0.28f)
+    }
+    private val flatPath = Path().apply {
+        moveTo(0.2f, -1f); lineTo(0.2f, 1f)
+        moveTo(0.2f, 0.05f); cubicTo(1f, -0.35f, 1f, 0.45f, 0.2f, 1f)
+    }
+    private val accidentalPaint = paint(R.color.ink).apply {
+        style = Paint.Style.STROKE; strokeWidth = 0.13f
+        strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
+    private val accidentalHaloPaint = paint(R.color.white).apply {
+        style = Paint.Style.STROKE; strokeWidth = 0.32f
+        strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
+    }
 
     init {
         isClickable = true
@@ -79,6 +101,7 @@ class ScoreStaffView @JvmOverloads constructor(
         val step: Int,
         val lane: Int,
         val headShift: Float,
+        val spelling: NoteSpelling,
     )
 
     private data class GroupLabel(
@@ -92,6 +115,7 @@ class ScoreStaffView @JvmOverloads constructor(
     private var notes: List<DrawNote> = emptyList()
     private var groups: List<NoteStartGroup> = emptyList()
     private var labels: List<GroupLabel> = emptyList()
+    private var spellingCache: NoteSpellingCache? = null
     private var noteTreeEnd = DoubleArray(0)
     private var groupEnds = DoubleArray(0)
     private var groupTreeEnd = DoubleArray(0)
@@ -131,6 +155,20 @@ class ScoreStaffView @JvmOverloads constructor(
     private var staffTop = 0f
     private var staffBottom = 0f
     private var captionBottom = 0f
+    private var accidentalIndices = IntArray(0)
+    private var accidentalOffsets = FloatArray(0)
+    private var accidentalLeft = FloatArray(0)
+    private var accidentalRight = FloatArray(0)
+    private var accidentalTop = FloatArray(0)
+    private var accidentalBottom = FloatArray(0)
+    private var accidentalCount = 0
+    private var accidentalHeight = 0f
+    private var accidentalWidth = 0f
+    private var accidentalPadding = 0f
+    private var accidentalFontHeight = 0f
+    private var accidentalCacheHash = Long.MIN_VALUE
+    private var accidentalCacheGap = Float.NaN
+    private var accidentalCacheScale = Float.NaN
 
     var score: MidiScore? = null
         set(value) { field = value; rebuildNotes(); invalidate() }
@@ -139,7 +177,9 @@ class ScoreStaffView @JvmOverloads constructor(
     var trackSelection: TrackSelection = TrackSelection.All
         set(value) { if (field != value) { field = value; rebuildNotes(); invalidate() } }
     var noteNaming: NoteNaming = NoteNaming.Letters
-        set(value) { if (field != value) { field = value; rebuildLabels(); invalidate() } }
+        set(value) { if (field != value) { field = value; rebuildLabels(); accidentalCacheHash = Long.MIN_VALUE; invalidate() } }
+    var accidentalPreference: AccidentalPreference = AccidentalPreference.Sharps
+        set(value) { if (field != value) { field = value; rebuildNotes(); invalidate() } }
 
     var onPositionScrubStart: ((Double) -> Unit)? = null
     var onPositionScrubChanged: ((Double) -> Unit)? = null
@@ -159,18 +199,14 @@ class ScoreStaffView @JvmOverloads constructor(
     private fun viewport() = BeatViewport(quarterBeatPosition, width * 0.34f,
         pixelsPerQuarterBeat(), 0f, width.toFloat())
 
-    private fun diatonicStepFromB4(pitch: Int): Int {
-        val p = pitch.coerceIn(0, 127)
-        val letter = when (p % 12) { 0, 1 -> 0; 2, 3 -> 1; 4 -> 2; 5, 6 -> 3; 7, 8 -> 4; 9, 10 -> 5; else -> 6 }
-        return (p / 12 - 1) * 7 + letter - 34
-    }
-
     /** All full-score work happens on model/selection changes, never in onDraw. */
     private fun rebuildNotes() {
         val localScore = score
         val selected = localScore?.visibleNotes(trackSelection) ?: emptyList()
+        val spellings = localScore?.let { NoteSpellingCache(it, selected, accidentalPreference) }
+        spellingCache = spellings
         octaveShift = if (selected.isEmpty()) 0 else
-            (-selected.sumOf { diatonicStepFromB4(it.pitch).toDouble() } / selected.size / 7.0)
+            (-selected.sumOf { spellings!!.spelling(it.pitch, it.startTick).staffStepFromB4.toDouble() } / selected.size / 7.0)
                 .roundToInt().coerceIn(-3, 3)
         groups = if (localScore == null) emptyList() else groupNotesByStartTick(localScore, selected)
         val groupIndices = groups.mapIndexed { index, group -> group.startTick to index }.toMap()
@@ -180,9 +216,9 @@ class ScoreStaffView @JvmOverloads constructor(
         val headShifts = groups.map { group ->
             val shifts = LinkedHashMap<Int, Float>()
             for (pitch in group.uniquePitches) {
-                val step = diatonicStepFromB4(pitch)
+                val step = spellings!!.spelling(pitch, group.startTick).staffStepFromB4
                 shifts[pitch] = candidates.firstOrNull { candidate -> shifts.all { (previousPitch, shift) ->
-                    val dy = (step - diatonicStepFromB4(previousPitch)) / 1.32f
+                    val dy = (step - spellings.spelling(previousPitch, group.startTick).staffStepFromB4) / 1.32f
                     val dx = (candidate - shift) / 2f
                     dx * dx + dy * dy >= 1.02f
                 } } ?: candidates.last()
@@ -199,8 +235,9 @@ class ScoreStaffView @JvmOverloads constructor(
                 var lane = ends.indexOfFirst { it <= interval.startBeat }
                 if (lane < 0) { lane = ends.size; ends.add(interval.endBeat) } else ends[lane] = interval.endBeat
                 val groupIndex = groupIndices.getValue(note.startTick)
-                DrawNote(note, interval, groupIndex, diatonicStepFromB4(note.pitch) + octaveShift * 7,
-                    lane, headShifts[groupIndex].getValue(note.pitch))
+                val spelling = spellings!!.spelling(note.pitch, note.startTick)
+                DrawNote(note, interval, groupIndex, spelling.staffStepFromB4 + octaveShift * 7,
+                    lane, headShifts[groupIndex].getValue(note.pitch), spelling)
             }
         maxHeadShift = notes.maxOfOrNull { abs(it.headShift) } ?: 0f
         noteTreeEnd = DoubleArray(notes.size)
@@ -212,6 +249,10 @@ class ScoreStaffView @JvmOverloads constructor(
         buildNoteTree(0, notes.size)
         buildGroupTree(0, groups.size)
         visibleNotes = IntArray(notes.size)
+        accidentalIndices = IntArray(notes.size); accidentalOffsets = FloatArray(notes.size)
+        accidentalLeft = FloatArray(notes.size); accidentalRight = FloatArray(notes.size)
+        accidentalTop = FloatArray(notes.size); accidentalBottom = FloatArray(notes.size)
+        accidentalCount = 0; accidentalCacheHash = Long.MIN_VALUE
         visibleGroups = IntArray(groups.size)
         overflowGroups = IntArray(groups.size)
         labelLeft = FloatArray(groups.size); labelRight = FloatArray(groups.size)
@@ -228,19 +269,21 @@ class ScoreStaffView @JvmOverloads constructor(
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         rebuildLabels()
+        accidentalCacheHash = Long.MIN_VALUE
         gridFrom = Double.POSITIVE_INFINITY; gridTo = Double.NEGATIVE_INFINITY
     }
 
     /** Label rows are reserved outside note/stem geometry; packing stays stable while scrolling. */
     private fun rebuildLabels() {
         val metrics = namePaint.fontMetrics
+        accidentalFontHeight = minOf(16f * scaledDensity, (metrics.descent - metrics.ascent) * 1.1f)
         rowHeight = metrics.descent - metrics.ascent + dp(3f)
         labelRows = if (height >= dp(220f) && rowHeight * 3f < height * 0.3f) 3 else 2
         val rowEnds = DoubleArray(labelRows) { Double.NEGATIVE_INFINITY }
         val maxWidth = minOf(dp(190f), width * 0.64f).coerceAtLeast(dp(28f))
         val scale = pixelsPerQuarterBeat()
         labels = groups.map { group ->
-            val names = group.uniquePitches.map { ScoreNavigator.pitchName(it, noteNaming) }
+            val names = group.uniquePitches.map { spellingCache!!.name(it, group.startTick, noteNaming) }
             val lines = ArrayList<String>(2)
             var consumed = 0
             repeat(2) {
@@ -367,7 +410,7 @@ class ScoreStaffView @JvmOverloads constructor(
         for (v in 0 until visibleCount) {
             val note = notes[visibleNotes[v]]
             topUnits = max(topUnits, note.step / 2f + 1.7f + 0.55f)
-            bottomUnits = max(bottomUnits, -note.step / 2f + 0.55f)
+            bottomUnits = max(bottomUnits, -note.step / 2f + if (note.spelling.accidental != 0) 0.95f else 0.55f)
         }
         lineGap = minOf(h * 0.105f, available / (topUnits + bottomUnits))
         staffCenter = barBandBottom + (available - (topUnits + bottomUnits) * lineGap) / 2f + topUnits * lineGap
@@ -441,6 +484,7 @@ class ScoreStaffView @JvmOverloads constructor(
             canvas.drawOval(rect, paint)
             canvas.drawLine(x + stemX, y, x + stemX, y - lineGap * 1.7f, paint)
         }
+        drawAccidentals(canvas, viewport, range.start, range.endInclusive)
         drawNoteOffMarkers(canvas, viewport)
         canvas.restore()
 
@@ -481,6 +525,126 @@ class ScoreStaffView @JvmOverloads constructor(
             canvas.drawText(if (localScore == null) emptyText else context.getString(R.string.staff_no_notes),
                 w / 2f, h - namePaint.fontMetrics.descent - dp(4f), textPaint)
             textPaint.textAlign = Paint.Align.LEFT
+        }
+    }
+
+    private fun overlaps(left: Float, top: Float, right: Float, bottom: Float,
+        otherLeft: Float, otherTop: Float, otherRight: Float, otherBottom: Float,
+    ): Boolean = left < otherRight && right > otherLeft && top < otherBottom && bottom > otherTop
+
+    /** Repack only when visible identities or scale change; normal frames translate cached offsets. */
+    private fun layoutAccidentals(viewport: BeatViewport, from: Double, to: Double) {
+        var hash = visibleCount.toLong()
+        for (v in 0 until visibleCount) {
+            val index = visibleNotes[v]
+            hash = hash * 31L + index
+            // A held note can retain interval visibility while its head enters
+            // the window during backwards seeking. That must repack its sign.
+            hash = hash * 31L + if (notes[index].interval.headVisible(from, to)) 1L else 0L
+        }
+        if (hash == accidentalCacheHash && lineGap == accidentalCacheGap &&
+            viewport.pixelsPerQuarterBeat == accidentalCacheScale) return
+        accidentalCacheHash = hash; accidentalCacheGap = lineGap
+        accidentalCacheScale = viewport.pixelsPerQuarterBeat
+        accidentalHeight = minOf(accidentalFontHeight, lineGap * 1.25f)
+        accidentalWidth = accidentalHeight * 0.45f
+        accidentalPadding = max(dp(0.8f), accidentalHeight * 0.08f)
+        accidentalCount = 0
+        val gap = dp(1.5f)
+        val stemHalf = max(dp(0.8f), lineGap * 0.055f) / 2f
+        for (v in 0 until visibleCount) {
+            val index = visibleNotes[v]
+            val note = notes[index]
+            if (note.spelling.accidental == 0 || !note.interval.headVisible(from, to)) continue
+            val onset = viewport.beatToX(note.interval.startBeat)
+            val head = onset + note.headShift * headX
+            val y = noteY(note)
+            val top = y - accidentalHeight / 2f - accidentalPadding
+            val bottom = y + accidentalHeight / 2f + accidentalPadding
+            var origin = head - headX - gap - accidentalWidth - accidentalPadding
+            var duplicate = -1
+            for (g in 0 until accidentalCount) {
+                val previous = notes[accidentalIndices[g]]
+                if (previous.note.pitch == note.note.pitch && previous.note.startTick == note.note.startTick &&
+                    previous.lane % 5 == note.lane % 5) { duplicate = g; break }
+            }
+            if (duplicate >= 0) {
+                // Coincident same-pitch voices have coincident heads; each still paints its own sign.
+                origin = onset + accidentalOffsets[accidentalIndices[duplicate]]
+            } else {
+                // Each correction moves strictly left of at least one obstacle. No temporal anchor moves.
+                for (attempt in 0 until visibleCount * 4 + accidentalCount + 1) {
+                    val left = origin - accidentalPadding
+                    val right = origin + accidentalWidth + accidentalPadding
+                    var target = origin
+                    for (o in 0 until visibleCount) {
+                        val other = notes[visibleNotes[o]]
+                        val otherY = noteY(other)
+                        val otherOnset = viewport.beatToX(other.interval.startBeat)
+                        val end = viewport.beatToX(other.interval.endBeat)
+                        if (other.interval.endBeat > other.interval.startBeat && end > otherOnset + headX) {
+                            val markerHalf = lineGap * (if (other.lane == 0) 0.13f else 0.065f) + dp(1f)
+                            if (overlaps(left, top, right, bottom, end - markerHaloPaint.strokeWidth / 2f,
+                                    otherY - markerHalf, end + markerHaloPaint.strokeWidth / 2f, otherY + markerHalf))
+                                target = minOf(target, end - markerHaloPaint.strokeWidth / 2f - gap - accidentalWidth - accidentalPadding)
+                        }
+                        if (!other.interval.headVisible(from, to)) continue
+                        val x = otherOnset + other.headShift * headX
+                        if (overlaps(left, top, right, bottom, x - headX, otherY - headY, x + headX, otherY + headY))
+                            target = minOf(target, x - headX - gap - accidentalWidth - accidentalPadding)
+                        val stemX = x + headX * 0.9f
+                        if (overlaps(left, top, right, bottom, stemX - stemHalf, otherY - lineGap * 1.7f, stemX + stemHalf, otherY))
+                            target = minOf(target, stemX - stemHalf - gap - accidentalWidth - accidentalPadding)
+                        if (abs(other.step) > 4) {
+                            val first = if (other.step > 0) 6 else -6
+                            val last = other.step
+                            val ledgerSteps = if (other.step > 0) first..last step 2 else first downTo last step 2
+                            for (step in ledgerSteps) {
+                                val ledgerY = staffCenter - step * lineGap / 2f
+                                if (overlaps(left, top, right, bottom, x - headX * 1.5f, ledgerY - linePaint.strokeWidth / 2f,
+                                        x + headX * 1.5f, ledgerY + linePaint.strokeWidth / 2f))
+                                    target = minOf(target, x - headX * 1.5f - gap - accidentalWidth - accidentalPadding)
+                            }
+                        }
+                    }
+                    for (g in 0 until accidentalCount) {
+                        if (overlaps(left, top, right, bottom, accidentalLeft[g], accidentalTop[g], accidentalRight[g], accidentalBottom[g]))
+                            target = minOf(target, accidentalLeft[g] - gap - accidentalWidth - accidentalPadding)
+                    }
+                    if (target == origin) break
+                    origin = target
+                }
+            }
+            accidentalOffsets[index] = origin - onset
+            accidentalIndices[accidentalCount] = index
+            accidentalLeft[accidentalCount] = origin - accidentalPadding
+            accidentalRight[accidentalCount] = origin + accidentalWidth + accidentalPadding
+            accidentalTop[accidentalCount] = top; accidentalBottom[accidentalCount] = bottom
+            accidentalCount++
+        }
+    }
+
+    private fun drawAccidentals(canvas: Canvas, viewport: BeatViewport, from: Double, to: Double) {
+        layoutAccidentals(viewport, from, to)
+        // All halos first, then all signs: one halo must not erase another sign.
+        for (pass in 0..1) for (g in 0 until accidentalCount) {
+            val index = accidentalIndices[g]
+            val note = notes[index]
+            val head = viewport.beatToX(note.interval.startBeat) + note.headShift * headX
+            if (head + headX < viewport.leftX || head - headX > viewport.rightX) continue
+            val path = if (note.spelling.accidental > 0) sharpPath else flatPath
+            val paint = if (pass == 0) accidentalHaloPaint else accidentalPaint.apply {
+                color = when (note.interval.stateAt(quarterBeatPosition)) {
+                    NoteTimeState.Future -> futurePaint.color
+                    NoteTimeState.Active -> activePaint.color
+                    NoteTimeState.Past -> pastMarkerColor
+                }
+            }
+            canvas.save()
+            canvas.translate(viewport.beatToX(note.interval.startBeat) + accidentalOffsets[index], noteY(note))
+            canvas.scale(accidentalWidth, accidentalHeight / 2f)
+            canvas.drawPath(path, paint)
+            canvas.restore()
         }
     }
 
@@ -561,6 +725,15 @@ class ScoreStaffView @JvmOverloads constructor(
 
     private fun hitGroup(x: Float, y: Float): Int {
         val viewport = viewport()
+        for (g in 0 until accidentalCount) {
+            val index = accidentalIndices[g]
+            val note = notes[index]
+            val head = viewport.beatToX(note.interval.startBeat) + note.headShift * headX
+            if (head + headX < viewport.leftX || head - headX > viewport.rightX) continue
+            val left = viewport.beatToX(note.interval.startBeat) + accidentalOffsets[index] - accidentalPadding
+            if (x in left..(left + accidentalWidth + accidentalPadding * 2f) &&
+                abs(y - noteY(note)) <= accidentalHeight / 2f + accidentalPadding) return note.group
+        }
         for (v in 0 until groupCount) {
             val index = visibleGroups[v]
             if (labelVisible[index] && x >= labelLeft[index] - dp(6f) && x <= labelRight[index] + dp(6f) &&

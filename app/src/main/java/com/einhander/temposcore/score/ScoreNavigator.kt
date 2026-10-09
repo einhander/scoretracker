@@ -102,12 +102,22 @@ object ScoreNavigator {
     }
 
     fun pitchName(pitch: Int, naming: NoteNaming = NoteNaming.Letters): String {
-        val letterNames = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-        val solfegeNames = arrayOf("До", "До♯", "Ре", "Ре♯", "Ми", "Фа", "Фа♯", "Соль", "Соль♯", "Ля", "Ля♯", "Си")
-        val p = pitch.coerceIn(0, 127)
-        val names = if (naming == NoteNaming.Solfege) solfegeNames else letterNames
-        return names[p % 12] + (p / 12 - 1)
+        val spelled = com.einhander.temposcore.score.pitchName(
+            spellMidiPitch(pitch, null, AccidentalPreference.Sharps), naming,
+        )
+        // Preserve legacy text API's ASCII sharp output (e.g. C#4); new
+        // spelling API intentionally emits Unicode ♯/♭.
+        return spelled.replace("♯", "#")
     }
+
+    fun pitchName(
+        score: MidiScore,
+        note: MidiNote,
+        naming: NoteNaming = NoteNaming.Letters,
+        fallback: AccidentalPreference = AccidentalPreference.Sharps,
+    ): String = com.einhander.temposcore.score.pitchName(
+        spellMidiPitch(note.pitch, keySignatureAt(score, note.startTick), fallback), naming,
+    )
 
     fun trackLabel(track: MidiTrackInfo, naming: NoteNaming = NoteNaming.Letters): String {
         var label = "Track ${track.index + 1}"

@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets
  * - Note On / Note Off
  * - tempo meta events (0x51)
  * - time-signature meta events (0x58)
+ * - key-signature meta events (0x59)
  * - SysEx skipping
  *
  * This is deliberately dependency-free so it can be unit-tested on the JVM.
@@ -38,6 +39,7 @@ object MidiFileParser {
         val notes = mutableListOf<MidiNote>()
         val tempos = mutableListOf<TempoEvent>()
         val signatures = mutableListOf<TimeSignatureEvent>()
+        val keySignatures = mutableListOf<KeySignatureEvent>()
         var totalTicks = 0L
         val trackNames = arrayOfNulls<String>(trackCount)
 
@@ -90,6 +92,17 @@ object MidiFileParser {
                                         signatures += TimeSignatureEvent(tick, numerator, denominator)
                                     }
                                     c.skip(len - 2)
+                                } else {
+                                    c.skip(len)
+                                }
+                            }
+                            0x59 -> {
+                                if (len == 2) {
+                                    val sharpsFlats = c.readU8().toByte().toInt()
+                                    val mode = c.readU8()
+                                    if (sharpsFlats in -7..7 && mode in 0..1) {
+                                        keySignatures += KeySignatureEvent(tick, sharpsFlats, mode == 1)
+                                    }
                                 } else {
                                     c.skip(len)
                                 }
@@ -166,6 +179,12 @@ object MidiFileParser {
             sortedSignatures.add(0, TimeSignatureEvent(0, 4, 4))
         }
 
+        // Timeline is file-global. Traversal order preserves source order;
+        // replacing by tick makes last valid event at duplicate tick win.
+        val lastKeySignatureAtTick = linkedMapOf<Long, KeySignatureEvent>()
+        keySignatures.forEach { lastKeySignatureAtTick[it.tick] = it }
+        val sortedKeySignatures = lastKeySignatureAtTick.values.sortedBy { it.tick }
+
         val sortedNotes = notes.sortedWith(compareBy<MidiNote> { it.startTick }.thenBy { it.pitch })
         totalTicks = maxOf(totalTicks, sortedNotes.maxOfOrNull { it.endTick } ?: 0L)
         val tracks = (0 until trackCount).map { index ->
@@ -183,6 +202,7 @@ object MidiFileParser {
             timeSignatures = sortedSignatures,
             totalTicks = totalTicks,
             tracks = tracks,
+            keySignatures = sortedKeySignatures,
         )
     }
 

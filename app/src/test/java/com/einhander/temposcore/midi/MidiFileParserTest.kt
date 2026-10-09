@@ -82,6 +82,54 @@ class MidiFileParserTest {
         assertEquals("A", score.tracks[0].name)
     }
 
+    @Test
+    fun keySignaturesAreValidatedGlobalAndLastValidSameTickWins() {
+        val track0 = byteArrayOf(
+            0, 0xff.toByte(), 0x59, 2, 1, 0, // C# major
+            10, 0xff.toByte(), 0x59, 2, 0xf8.toByte(), 0, // invalid sf -8
+            0, 0xff.toByte(), 0x59, 2, 1, 2, // invalid mode
+            0, 0xff.toByte(), 0x59, 1, 0, // invalid length, payload still skipped
+            0, 0xff.toByte(), 0x59, 3, 0xfe.toByte(), 0, 0, // invalid length
+            0, 0xff.toByte(), 0x59, 2, 0xfe.toByte(), 1, // valid D-flat minor at tick 10
+            0, 0x90.toByte(), 60, 100, // parser remains aligned after malformed events
+            10, 0x80.toByte(), 60, 0,
+            0, 0xff.toByte(), 0x2f, 0,
+        )
+        val track1 = byteArrayOf(
+            0, 0xff.toByte(), 0x59, 2, 4, 0, // later input track wins tick zero
+            0, 0xff.toByte(), 0x2f, 0,
+        )
+        val score = MidiFileParser.parse(smf(format = 1, tracks = listOf(track0, track1)))
+        assertEquals(listOf(KeySignatureEvent(0, 4, false), KeySignatureEvent(10, -2, true)), score.keySignatures)
+        assertEquals(1, score.notes.size)
+        assertEquals(60, score.notes.single().pitch)
+    }
+
+    @Test
+    fun malformedAndAbsentKeySignaturesDoNotInventKey() {
+        val score = MidiFileParser.parse(smf(format = 0, listOf(byteArrayOf(
+            0, 0xff.toByte(), 0x59, 2, 8, 0,
+            0, 0xff.toByte(), 0x59, 2, 0, 3,
+            0, 0xff.toByte(), 0x2f, 0,
+        ))))
+        assertTrue(score.keySignatures.isEmpty())
+        assertTrue(MidiFileParser.parse(smf(format = 0, listOf(byteArrayOf(0, 0xff.toByte(), 0x2f, 0))))
+            .keySignatures.isEmpty())
+    }
+
+    private fun smf(format: Int, tracks: List<ByteArray>): ByteArray {
+        val output = java.io.ByteArrayOutputStream()
+        output.write(hex("4D5468640000000600${format.toString(16).padStart(2, '0')}${tracks.size.toString(16).padStart(4, '0')}01E0"))
+        tracks.forEach { track ->
+            output.write(hex("4D54726B"))
+            val size = track.size
+            output.write(byteArrayOf((size ushr 24).toByte(), (size ushr 16).toByte(),
+                (size ushr 8).toByte(), size.toByte()))
+            output.write(track)
+        }
+        return output.toByteArray()
+    }
+
     private fun hex(text: String): ByteArray {
         require(text.length % 2 == 0)
         return ByteArray(text.length / 2) { i ->

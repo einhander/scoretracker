@@ -30,6 +30,10 @@
     <string name="settings">Настройки</string>
     <string name="notation_letters">Названия нот: A B C</string>
     <string name="notation_solfege">Названия нот: До Ре Ми</string>
+    <string name="accidental_midi_priority">Тональность MIDI имеет приоритет</string>
+    <string name="accidental_sharps">Диезы ♯ — при отсутствии тональности MIDI</string>
+    <string name="accidental_flats">Бемоли ♭ — при отсутствии тональности MIDI</string>
+    <string name="track_range_spelling_context">Диапазон подписан по тональности начала MIDI; при её отсутствии — по настройке диезов или бемолей.</string>
     <string name="show_test_mode">Тестовый режим MP3</string>
     <string name="score_preview">Ожидаемые ноты и длительности MIDI. Перетащите по горизонтали для установки позиции. Нажмите на ноты, подписи или +N для полного списка.</string>
     <string name="test_seek_description">Позиция тестового MP3</string>
@@ -65,7 +69,7 @@
     <string name="staff_meter">%1$d/%2$d</string>
     <string name="staff_overflow">+%1$d</string>
     <string name="staff_no_notes">В выбранной дорожке нет нот</string>
-    <string name="staff_details_title">Ноты MIDI · удержание до Note Off</string>
+    <string name="staff_details_title">Ноты MIDI · момент отпускания</string>
     <string name="staff_details_close">Закрыть</string>
     <string name="staff_group_header">Начало: ≈ %1$.3f четверти\n%2$s</string>
     <string name="staff_note_details">%1$s · ≈ %2$.3f четверти · конец ≈ %3$.3f четверти · дорожка %4$d, канал %5$d</string>

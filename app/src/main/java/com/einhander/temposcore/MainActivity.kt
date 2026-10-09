@@ -23,10 +23,15 @@ import com.einhander.temposcore.midi.MidiFileParser
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.NoteNaming
+import com.einhander.temposcore.score.AccidentalPreference
 import com.einhander.temposcore.score.NoteStartGroup
 import com.einhander.temposcore.score.ScoreNavigator
 import com.einhander.temposcore.score.TrackSelection
 import com.einhander.temposcore.score.visibleNotes
+import com.einhander.temposcore.score.keySignatureAt
+import com.einhander.temposcore.score.pitchName
+import com.einhander.temposcore.score.spellMidiPitch
+import com.einhander.temposcore.ui.NoteSpellingCache
 import com.einhander.temposcore.transport.PositionTrackingState
 import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
@@ -44,6 +49,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private lateinit var testAudioPlayer: TestAudioPlayer
     private var testSeekUserDragging = false
     private var noteNaming = NoteNaming.Letters
+    private var accidentalPreference = AccidentalPreference.Sharps
+    private var noteSpellingCache: NoteSpellingCache? = null
     private var showTestMode = false
     private var testPanelExpanded = true
     private var scoreScrubActive = false
@@ -91,6 +98,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             else -> NoteNaming.Letters
         }
         binding.scoreView.noteNaming = noteNaming
+        accidentalPreference = when (prefs.getString(KEY_ACCIDENTAL_PREFERENCE, AccidentalPreference.Sharps.name)) {
+            AccidentalPreference.Flats.name -> AccidentalPreference.Flats
+            else -> AccidentalPreference.Sharps
+        }
+        binding.scoreView.accidentalPreference = accidentalPreference
         showTestMode = prefs.getBoolean(KEY_SHOW_TEST_MODE, false)
         applyTestModeVisibility()
 
@@ -248,6 +260,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                         NativeAudioBridge.stop()
                     }
                     score = parsed
+                    noteSpellingCache = NoteSpellingCache(parsed, parsed.notes, accidentalPreference)
                     val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
                     trackSelection = defaultTrack?.let { TrackSelection.Track(it) }
                         ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
@@ -286,15 +299,15 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 when {
                     it.noteCount == 0 -> getString(R.string.track_no_notes)
                     it.pitchMin != null && it.pitchMax != null -> getString(R.string.track_details,
-                        it.noteCount, ScoreNavigator.pitchName(it.pitchMin, noteNaming),
-                        ScoreNavigator.pitchName(it.pitchMax, noteNaming))
+                        it.noteCount, pitchName(spellMidiPitch(it.pitchMin, keySignatureAt(score, 0L), accidentalPreference), noteNaming),
+                        pitchName(spellMidiPitch(it.pitchMax, keySignatureAt(score, 0L), accidentalPreference), noteNaming))
                     else -> getString(R.string.track_note_count, it.noteCount)
                 }
             }
             val adapter = object : ArrayAdapter<String>(this, R.layout.track_spinner_item, items) {
                 override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
                     return super.getView(position, convertView, parent).apply {
-                        contentDescription = "${items[position]}. ${details[position]}"
+                        contentDescription = "${items[position]}. ${details[position]}. ${getString(R.string.track_range_spelling_context)}"
                     }
                 }
 
@@ -302,7 +315,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                     val row = convertView ?: layoutInflater.inflate(R.layout.track_spinner_dropdown_item, parent, false)
                     row.findViewById<android.widget.TextView>(R.id.trackTitle).text = items[position]
                     row.findViewById<android.widget.TextView>(R.id.trackDetails).text = details[position]
-                    row.contentDescription = "${items[position]}. ${details[position]}"
+                    row.contentDescription = "${items[position]}. ${details[position]}. ${getString(R.string.track_range_spelling_context)}"
                     return row
                 }
             }
@@ -323,7 +336,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             }
             binding.trackSpinner.setSelection(selection, false)
             binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
-                items[selection] + ". " + details[selection]
+                items[selection] + ". " + details[selection] + ". " + getString(R.string.track_range_spelling_context)
             spinnerPopulating = false
             binding.trackSelectorRow.visibility = View.VISIBLE
         } else {
@@ -445,8 +458,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             barBeat.numerator,
             barBeat.denominator,
         )
-        binding.nowText.text = getString(R.string.now_notes, ScoreNavigator.noteList(now, noteNaming))
-        binding.nextText.text = getString(R.string.next_notes, ScoreNavigator.noteList(next, noteNaming))
+        binding.nowText.text = getString(R.string.now_notes, spelledNoteList(now))
+        binding.nextText.text = getString(R.string.next_notes, spelledNoteList(next))
         // Beat confidence (fast loop) — kept separate from position confidence (spec §31).
         binding.confidenceText.text = getString(R.string.beat_confidence, state.beatConfidence * 100.0)
         binding.positionStatusText.text = formatPositionStatus(state)
@@ -507,10 +520,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             isCheckable = true
             isChecked = showTestMode
         }
+        popup.menu.add(4, MENU_ACCIDENTAL_HINT, 3, getString(R.string.accidental_midi_priority)).isEnabled = false
+        val sharps = popup.menu.add(3, MENU_ACCIDENTAL_SHARPS, 4, getString(R.string.accidental_sharps))
+        val flats = popup.menu.add(3, MENU_ACCIDENTAL_FLATS, 5, getString(R.string.accidental_flats))
+        popup.menu.setGroupCheckable(3, true, true)
+        sharps.isChecked = accidentalPreference == AccidentalPreference.Sharps
+        flats.isChecked = accidentalPreference == AccidentalPreference.Flats
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
                 MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
+                MENU_ACCIDENTAL_SHARPS -> { setAccidentalPreference(AccidentalPreference.Sharps); true }
+                MENU_ACCIDENTAL_FLATS -> { setAccidentalPreference(AccidentalPreference.Flats); true }
                 MENU_SHOW_TEST_MODE -> {
                     setTestModeVisible(!showTestMode)
                     true
@@ -525,17 +546,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     @Suppress("DEPRECATION")
     private fun showNoteGroups(groups: List<NoteStartGroup>) {
         val localScore = score ?: return
+        val spellings = noteSpellingCache ?: return
         if (groups.isEmpty()) return
         val details = buildString {
             append(getString(R.string.staff_details_hint))
             for (group in groups) {
                 append("\n\n")
                 append(getString(R.string.staff_group_header, group.startBeat,
-                    group.uniquePitches.joinToString(" · ") { ScoreNavigator.pitchName(it, noteNaming) }))
+                    group.uniquePitches.joinToString(" · ") { spellings.name(it, group.startTick, noteNaming) }))
                 for (note in group.notes) {
                     append("\n")
                     append(getString(R.string.staff_note_details,
-                        ScoreNavigator.pitchName(note.pitch, noteNaming),
+                        spellings.name(note, noteNaming),
                         note.durationTicks.toDouble() / localScore.ppq,
                         localScore.noteEndBeat(note), note.track + 1, note.channel + 1))
                 }
@@ -557,6 +579,22 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         // A focused dialog has its own decor; retain the activity's sticky
         // immersive policy instead of permanently revealing navigation bars.
         dialog.window?.decorView?.systemUiVisibility = window.decorView.systemUiVisibility
+    }
+
+    private fun spelledNoteList(notes: List<MidiNote>): String {
+        val spellings = noteSpellingCache ?: return "—"
+        return if (notes.isEmpty()) "—" else notes.joinToString(" ") { spellings.name(it, noteNaming) }
+    }
+
+    private fun setAccidentalPreference(value: AccidentalPreference) {
+        if (accidentalPreference == value) return
+        accidentalPreference = value
+        binding.scoreView.accidentalPreference = value
+        noteSpellingCache = score?.let { NoteSpellingCache(it, it.notes, value) }
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_ACCIDENTAL_PREFERENCE, value.name).apply()
+        score?.let { populateTrackSelector(it) }
+        updateUiFromTransport()
     }
 
     private fun setNoteNaming(value: NoteNaming) {
@@ -658,10 +696,14 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     companion object {
         private const val PREFS_NAME = "temposcore_settings"
         private const val KEY_NOTE_NAMING = "note_naming"
+        private const val KEY_ACCIDENTAL_PREFERENCE = "accidental_preference"
         private const val KEY_SHOW_TEST_MODE = "show_test_mode"
         private const val MENU_NOTATION_LETTERS = 1
         private const val MENU_NOTATION_SOLFEGE = 2
         private const val MENU_SHOW_TEST_MODE = 3
+        private const val MENU_ACCIDENTAL_SHARPS = 4
+        private const val MENU_ACCIDENTAL_FLATS = 5
+        private const val MENU_ACCIDENTAL_HINT = 6
     }
 
 }
