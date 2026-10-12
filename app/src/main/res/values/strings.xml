@@ -1,5 +1,10 @@
 <resources>
     <string name="browser_title">Открыть MIDI</string>
+    <string name="browser_mp3_title">Открыть MP3</string>
+    <string name="browser_mp3">MP3</string>
+    <string name="browser_mp3_hint">Папки и файлы .mp3</string>
+    <string name="browser_mp3_no_folder">Выберите папку с MP3. Разрешение запрашивается в системном окне; затем файлы можно выбирать здесь.</string>
+    <string name="browser_mp3_empty">В этой папке нет подпапок или MP3-файлов.</string>
     <string name="browser_change_folder">Сменить папку</string>
     <string name="browser_choose_folder">Выбрать папку</string>
     <string name="browser_close">Закрыть</string>

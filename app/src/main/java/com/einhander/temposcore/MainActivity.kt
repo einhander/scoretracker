@@ -3,7 +3,6 @@ package com.einhander.temposcore
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -36,6 +35,8 @@ import com.einhander.temposcore.score.pitchName
 import com.einhander.temposcore.score.spellMidiPitch
 import com.einhander.temposcore.ui.NoteSpellingCache
 import com.einhander.temposcore.ui.browser.MidiBrowserDialog
+import com.einhander.temposcore.ui.browser.BrowserMode
+import com.einhander.temposcore.ui.browser.shouldReleaseTreePermission
 import com.einhander.temposcore.transport.PositionTrackingState
 import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
@@ -67,32 +68,24 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var lastPositionState: PositionTrackingState? = null
     private var lastDiagnosticSampleNs = 0L
     private var midiLoadGeneration = 0
+    private var testAudioLoadGeneration = 0
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
     }
 
     private val openMidiTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) {
-            try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-                val previous = prefs.getString(KEY_MIDI_TREE, null)
-                prefs.edit().putString(KEY_MIDI_TREE, uri.toString()).apply()
-                if (previous != null && previous != uri.toString()) {
-                    try {
-                        contentResolver.releasePersistableUriPermission(Uri.parse(previous), Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    } catch (_: SecurityException) { /* Old permission may already have been revoked. */ }
-                }
-            } catch (_: SecurityException) {
-                Toast.makeText(this, R.string.browser_grant_error, Toast.LENGTH_LONG).show()
-            }
-        }
-        showMidiBrowser()
+        if (uri != null) persistBrowserTree(BrowserMode.MIDI, uri)
+        showFileBrowser(BrowserMode.MIDI)
     }
 
     private val openTestAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadTestAudio(uri)
+    }
+
+    private val openMp3Tree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) persistBrowserTree(BrowserMode.MP3, uri)
+        showFileBrowser(BrowserMode.MP3)
     }
 
     private val requestMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -158,9 +151,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.scoreView.onNoteGroupsRequested = { groups -> showNoteGroups(groups) }
 
         binding.loadMidiButton.setOnClickListener {
-            if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null) == null) {
-                chooseMidiFolder()
-            } else showMidiBrowser()
+            openFileBrowser(BrowserMode.MIDI)
         }
 
         binding.listenButton.setOnClickListener {
@@ -177,7 +168,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
 
         binding.loadTestAudioButton.setOnClickListener {
-            openTestAudio.launch(arrayOf("audio/mpeg", "audio/mp3", "audio/*"))
+            openFileBrowser(BrowserMode.MP3)
         }
         binding.testPlayPauseButton.setOnClickListener {
             if (score == null) {
@@ -226,22 +217,53 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
     }
 
-    private fun showMidiBrowser() {
+    private fun treePreference(mode: BrowserMode) = if (mode == BrowserMode.MIDI) KEY_MIDI_TREE else KEY_MP3_TREE
+
+    private fun openFileBrowser(mode: BrowserMode) {
+        if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(treePreference(mode), null) == null) {
+            chooseBrowserFolder(mode)
+        } else showFileBrowser(mode)
+    }
+
+    private fun showFileBrowser(mode: BrowserMode) {
         if (supportFragmentManager.isStateSaved || supportFragmentManager.findFragmentByTag(MidiBrowserDialog.TAG) != null) return
-        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null)
-        MidiBrowserDialog.create(tree).show(supportFragmentManager, MidiBrowserDialog.TAG)
+        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(treePreference(mode), null)
+        MidiBrowserDialog.create(tree, mode).show(supportFragmentManager, MidiBrowserDialog.TAG)
     }
 
-    override fun chooseMidiFolder() {
-        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null)?.let(Uri::parse)
-        openMidiTree.launch(tree)
+    private fun persistBrowserTree(mode: BrowserMode, uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            val key = treePreference(mode)
+            val otherKey = treePreference(if (mode == BrowserMode.MIDI) BrowserMode.MP3 else BrowserMode.MIDI)
+            val previous = prefs.getString(key, null)
+            val otherTree = prefs.getString(otherKey, null)
+            prefs.edit().putString(key, uri.toString()).apply()
+            if (shouldReleaseTreePermission(previous, uri.toString(), otherTree)) {
+                try {
+                    contentResolver.releasePersistableUriPermission(Uri.parse(previous!!), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: SecurityException) { /* Old permission may already have been revoked. */ }
+            }
+        } catch (_: SecurityException) {
+            Toast.makeText(this, R.string.browser_grant_error, Toast.LENGTH_LONG).show()
+        }
     }
 
-    override fun chooseMidiWithSystemPicker() {
-        openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+    override fun chooseBrowserFolder(mode: BrowserMode) {
+        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(treePreference(mode), null)?.let(Uri::parse)
+        if (mode == BrowserMode.MIDI) openMidiTree.launch(tree) else openMp3Tree.launch(tree)
     }
 
-    override fun selectBrowserMidi(uri: Uri) { loadMidi(uri) }
+    override fun chooseWithSystemPicker(mode: BrowserMode) {
+        if (mode == BrowserMode.MIDI) {
+            openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+        } else openTestAudio.launch(arrayOf("audio/mpeg", "audio/mp3"))
+    }
+
+    override fun selectBrowserDocument(mode: BrowserMode, uri: Uri) {
+        if (mode == BrowserMode.MIDI) loadMidi(uri) else loadTestAudio(uri)
+    }
 
     override fun onResume() {
         super.onResume()
@@ -280,6 +302,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     override fun onDestroy() {
         midiLoadGeneration++
+        testAudioLoadGeneration++
         testAudioPlayer.release()
         if (nativeInitialized) NativeAudioBridge.stop()
         super.onDestroy()
@@ -681,13 +704,30 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private fun loadTestAudio(uri: Uri) {
-        val name = displayName(uri) ?: getString(R.string.test_audio_fallback)
-        testAudioPlayer.load(uri)
-        binding.testAudioNameText.text = name
-        binding.testPlayPauseButton.isEnabled = score != null
-        binding.testRestartButton.isEnabled = score != null
-        binding.testStopButton.isEnabled = false
-        binding.testSeekBar.isEnabled = true
+        binding.loadTestAudioButton.isEnabled = false
+        val token = ++testAudioLoadGeneration
+        val weak = WeakReference(this)
+        val resolver = applicationContext.contentResolver
+        val handler = Handler(Looper.getMainLooper())
+        Thread {
+            val name = runCatching {
+                resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                }
+            }.getOrNull()
+            handler.post {
+                val activity = weak.get()
+                if (activity != null && !activity.isDestroyed && !activity.isFinishing && activity.testAudioLoadGeneration == token) {
+                    activity.testAudioPlayer.load(uri)
+                    activity.binding.testAudioNameText.text = name ?: activity.getString(R.string.test_audio_fallback)
+                    activity.binding.testPlayPauseButton.isEnabled = activity.score != null
+                    activity.binding.testRestartButton.isEnabled = activity.score != null
+                    activity.binding.testStopButton.isEnabled = false
+                    activity.binding.testSeekBar.isEnabled = true
+                    activity.binding.loadTestAudioButton.isEnabled = true
+                }
+            }
+        }.start()
     }
 
     override fun onTestAudioStateChanged(state: TestAudioPlayer.State) {
@@ -738,21 +778,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         PositionTrackingState.Reacquiring -> getString(R.string.position_reacquiring)
     }
 
-    private fun displayName(uri: Uri): String? {
-        var cursor: Cursor? = null
-        return try {
-            cursor = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            if (cursor != null && cursor.moveToFirst()) cursor.getString(0) else null
-        } finally {
-            cursor?.close()
-        }
-    }
     companion object {
         private const val PREFS_NAME = "temposcore_settings"
         private const val KEY_NOTE_NAMING = "note_naming"
         private const val KEY_ACCIDENTAL_PREFERENCE = "accidental_preference"
         private const val KEY_SHOW_TEST_MODE = "show_test_mode"
         private const val KEY_MIDI_TREE = "midi_tree_uri"
+        private const val KEY_MP3_TREE = "mp3_tree_uri"
         private const val MENU_NOTATION_LETTERS = 1
         private const val MENU_NOTATION_SOLFEGE = 2
         private const val MENU_SHOW_TEST_MODE = 3

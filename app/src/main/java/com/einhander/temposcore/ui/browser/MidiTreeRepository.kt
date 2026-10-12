@@ -9,7 +9,8 @@ data class BrowserListing(val documents: List<BrowserDocument>, val loading: Boo
 
 /** Called on a worker with an application resolver; never retains a view or Activity. */
 object MidiTreeRepository {
-    fun list(resolver: ContentResolver, tree: Uri, folderId: String, cancellation: CancellationSignal): BrowserListing {
+    fun list(resolver: ContentResolver, tree: Uri, folderId: String, cancellation: CancellationSignal,
+        mode: BrowserMode = BrowserMode.MIDI): BrowserListing {
         val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         val rootName = resolver.query(root, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
             null, null, null, cancellation)?.use {
@@ -35,7 +36,7 @@ object MidiTreeRepository {
                 val mime = it.getString(mimeColumn)
                 val directory = mime == DocumentsContract.Document.MIME_TYPE_DIR
                 val virtual = it.getInt(flagsColumn) and DocumentsContract.Document.FLAG_VIRTUAL_DOCUMENT != 0
-                if (directory || (!virtual && isSupportedMidi(name, mime))) {
+                if (directory || (!virtual && mode.accepts(name, mime))) {
                     documents.add(BrowserDocument(id, name, directory))
                 }
             }

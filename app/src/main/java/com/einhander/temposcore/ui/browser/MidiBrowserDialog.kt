@@ -22,16 +22,20 @@ import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
-/** A landscape dialog within the Activity, with access bounded to one SAF tree. */
+/** Shared MIDI/MP3 landscape dialog, with access bounded to the selected mode's SAF tree. */
 class MidiBrowserDialog : DialogFragment() {
     interface Host {
-        fun chooseMidiFolder()
-        fun chooseMidiWithSystemPicker()
-        fun selectBrowserMidi(uri: Uri)
+        fun chooseBrowserFolder(mode: BrowserMode)
+        fun chooseWithSystemPicker(mode: BrowserMode)
+        fun selectBrowserDocument(mode: BrowserMode, uri: Uri)
     }
 
     private var binding: DialogMidiBrowserBinding? = null
     private var tree: Uri? = null
+    private var mode = BrowserMode.MIDI
+    private val hintResource get() = if (mode == BrowserMode.MP3) R.string.browser_mp3_hint else R.string.browser_hint
+    private val noFolderResource get() = if (mode == BrowserMode.MP3) R.string.browser_mp3_no_folder else R.string.browser_no_folder
+    private val emptyResource get() = if (mode == BrowserMode.MP3) R.string.browser_mp3_empty else R.string.browser_empty
     private var navigation: BrowserNavigation? = null
     private var rootName: String? = null
     private var listed: List<BrowserDocument> = emptyList()
@@ -42,6 +46,7 @@ class MidiBrowserDialog : DialogFragment() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        mode = BrowserMode.entries.firstOrNull { it.name == arguments?.getString(KEY_MODE) } ?: BrowserMode.MIDI
         tree = arguments?.getString(KEY_TREE)?.let(Uri::parse)
         tree?.let { uri ->
             navigation = BrowserNavigation(BrowserDocument(DocumentsContract.getTreeDocumentId(uri),
@@ -60,13 +65,14 @@ class MidiBrowserDialog : DialogFragment() {
     override fun onCreateDialog(state: Bundle?): Dialog {
         val views = DialogMidiBrowserBinding.inflate(LayoutInflater.from(requireContext()))
         binding = views
+        views.browserTitle.setText(if (mode == BrowserMode.MP3) R.string.browser_mp3_title else R.string.browser_title)
         views.chooseFolder.setText(if (tree == null) R.string.browser_choose_folder else R.string.browser_change_folder)
         views.chooseFolder.setOnClickListener {
-            (requireActivity() as Host).chooseMidiFolder()
+            (requireActivity() as Host).chooseBrowserFolder(mode)
             dismiss()
         }
         views.systemPicker.setOnClickListener {
-            (requireActivity() as Host).chooseMidiWithSystemPicker()
+            (requireActivity() as Host).chooseWithSystemPicker(mode)
             dismiss()
         }
         views.closeBrowser.setOnClickListener { dismiss() }
@@ -79,7 +85,7 @@ class MidiBrowserDialog : DialogFragment() {
                 if (nav.enter(document, listed)) loadFolder()
             } else {
                 val uri = DocumentsContract.buildDocumentUriUsingTree(tree!!, document.id)
-                (requireActivity() as Host).selectBrowserMidi(uri)
+                (requireActivity() as Host).selectBrowserDocument(mode, uri)
                 dismiss()
             }
         }
@@ -133,17 +139,18 @@ class MidiBrowserDialog : DialogFragment() {
         views.documents.adapter = null
         views.documents.isEnabled = false
         views.retryFolder.isEnabled = false
-        views.browserHint.setText(R.string.browser_hint)
-        showStatus(if (tree == null) R.string.browser_no_folder else R.string.browser_loading)
+        views.browserHint.setText(hintResource)
+        showStatus(if (tree == null) noFolderResource else R.string.browser_loading)
         val localTree = tree ?: return
         val folder = nav?.current ?: return
         val resolver = requireContext().applicationContext.contentResolver
         val signal = CancellationSignal()
         cancellation = signal
         val token = generation
+        val queryMode = mode
         val weak = WeakReference(this)
         pending = executor.submit {
-            val result = runCatching { MidiTreeRepository.list(resolver, localTree, folder.id, signal) }
+            val result = runCatching { MidiTreeRepository.list(resolver, localTree, folder.id, signal, queryMode) }
             mainHandler.post { weak.get()?.acceptListing(token, result) }
         }
     }
@@ -160,7 +167,8 @@ class MidiBrowserDialog : DialogFragment() {
                 override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
                     val row = convertView ?: layoutInflater.inflate(R.layout.midi_browser_item, parent, false)
                     val document = getItem(position)!!
-                    val kind = getString(if (document.directory) R.string.browser_folder else R.string.browser_midi)
+                    val kind = getString(if (document.directory) R.string.browser_folder else
+                        if (mode == BrowserMode.MP3) R.string.browser_mp3 else R.string.browser_midi)
                     row.findViewById<TextView>(R.id.documentKind).text = kind
                     row.findViewById<TextView>(R.id.documentName).text = document.name
                     row.contentDescription = "$kind: ${document.name}"
@@ -169,7 +177,7 @@ class MidiBrowserDialog : DialogFragment() {
             }
             views.documents.isEnabled = true
             if (listing.documents.isEmpty()) {
-                showStatus(if (listing.loading) R.string.browser_provider_loading else R.string.browser_empty)
+                showStatus(if (listing.loading) R.string.browser_provider_loading else emptyResource)
             } else {
                 views.browserStatus.visibility = View.GONE
             }
@@ -217,11 +225,12 @@ class MidiBrowserDialog : DialogFragment() {
     companion object {
         const val TAG = "midi_browser"
         private const val KEY_TREE = "tree"
+        private const val KEY_MODE = "mode"
         private const val KEY_IDS = "folder_ids"
         private const val KEY_NAMES = "folder_names"
         private val mainHandler = Handler(Looper.getMainLooper())
-        fun create(tree: String?) = MidiBrowserDialog().apply {
-            arguments = Bundle().apply { putString(KEY_TREE, tree) }
+        fun create(tree: String?, mode: BrowserMode = BrowserMode.MIDI) = MidiBrowserDialog().apply {
+            arguments = Bundle().apply { putString(KEY_TREE, tree); putString(KEY_MODE, mode.name) }
         }
     }
 }
