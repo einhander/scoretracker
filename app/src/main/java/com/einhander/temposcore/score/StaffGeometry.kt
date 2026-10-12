@@ -3,6 +3,20 @@ package com.einhander.temposcore.score
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 
+/** Horizontal-only magnification; the transport beat remains anchored at the cursor. */
+fun horizontalZoom(startZoom: Float, startSpan: Float, span: Float): Float {
+    if (!startSpan.isFinite() || !span.isFinite() || startSpan <= 0f || span <= 0f) return startZoom
+    return (startZoom * span / startSpan).coerceIn(0.5f, 4f)
+}
+
+/** Full-selection extents in line-gap units, independent of the visible beat window. */
+data class StaffExtent(val top: Float = 2f, val bottom: Float = 2f) {
+    fun including(step: Int, accidental: Boolean, laneOffset: Float = 0f): StaffExtent = StaffExtent(
+        maxOf(top, step / 2f - laneOffset + 2.25f),
+        maxOf(bottom, -step / 2f + laneOffset + if (accidental) 0.95f else 0.55f),
+    )
+}
+
 data class BeatViewport(
     val quarterBeatPosition: Double,
     val cursorX: Float,

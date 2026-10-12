@@ -10,6 +10,39 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StaffGeometryTest {
+    @Test fun horizontalPinchIsBoundedAndRejectsDegenerateSpans() {
+        assertEquals(2f, horizontalZoom(1f, 100f, 200f), 0f)
+        assertEquals(0.5f, horizontalZoom(1f, 100f, 1f), 0f)
+        assertEquals(4f, horizontalZoom(2f, 100f, 1000f), 0f)
+        assertEquals(2f, horizontalZoom(2f, 0f, 100f), 0f)
+        assertEquals(2f, horizontalZoom(2f, 100f, Float.NaN), 0f)
+        assertEquals(2f, horizontalZoom(2f, 100f, 0f), 0f)
+    }
+
+    @Test fun zoomKeepsTransportAtNowCursorAndOnlyChangesHorizontalSpacing() {
+        val base = BeatViewport(12.25, 170f, 50f, 0f, 500f)
+        val zoomed = base.copy(pixelsPerQuarterBeat = base.pixelsPerQuarterBeat * horizontalZoom(1f, 100f, 200f))
+        assertEquals(base.quarterBeatPosition, zoomed.quarterBeatPosition, 0.0)
+        assertEquals(base.cursorX, zoomed.beatToX(base.quarterBeatPosition), 0f)
+        assertEquals(100f, zoomed.beatToX(13.25) - zoomed.cursorX, 0f)
+        assertTrue(zoomed.visibleBeatRange().endInclusive < base.visibleBeatRange().endInclusive)
+    }
+
+    @Test fun fullSelectionExtentIncludesRemoteExtremesAndIsOrderIndependent() {
+        val pitches = listOf(Triple(0, false, 0f), Triple(24, true, -0.2f), Triple(-20, true, 0.2f))
+        fun extent(values: List<Triple<Int, Boolean, Float>>) = values.fold(StaffExtent()) { current, (step, accidental, lane) ->
+            current.including(step, accidental, lane)
+        }
+        val full = extent(pitches)
+        assertEquals(full, extent(pitches.reversed()))
+        assertEquals(14.45f, full.top, 1e-5f)
+        assertEquals(11.15f, full.bottom, 1e-5f)
+        assertTrue(full.top > extent(pitches.take(1)).top)
+        assertTrue(full.bottom > extent(pitches.take(1)).bottom)
+        assertEquals(StaffExtent(), extent(emptyList()))
+        assertTrue(extent(listOf(Triple(-8, true, 0f))).bottom > extent(listOf(Triple(-8, false, 0f))).bottom)
+    }
+
     private fun score(notes: List<MidiNote> = emptyList(), meters: List<TimeSignatureEvent> = emptyList()) = MidiScore(
         format = 1, ppq = 480, notes = notes, tempoMap = emptyList(), timeSignatures = meters,
         totalTicks = 10000, tracks = emptyList(),

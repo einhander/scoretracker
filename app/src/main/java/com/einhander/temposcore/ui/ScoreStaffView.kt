@@ -16,6 +16,8 @@ import com.einhander.temposcore.R
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.BeatViewport
+import com.einhander.temposcore.score.StaffExtent
+import com.einhander.temposcore.score.horizontalZoom
 import com.einhander.temposcore.score.AccidentalPreference
 import com.einhander.temposcore.score.MeasureBoundary
 import com.einhander.temposcore.score.NoteInterval
@@ -150,11 +152,13 @@ class ScoreStaffView @JvmOverloads constructor(
     private var maxHeadShift = 0f
     private var staffCenter = 0f
     private var lineGap = 0f
+    private var staffExtent = StaffExtent()
     private var headX = 0f
     private var headY = 0f
     private var staffTop = 0f
     private var staffBottom = 0f
     private var captionBottom = 0f
+    private var barBandBottom = 0f
     private var accidentalIndices = IntArray(0)
     private var accidentalOffsets = FloatArray(0)
     private var accidentalLeft = FloatArray(0)
@@ -194,8 +198,15 @@ class ScoreStaffView @JvmOverloads constructor(
     private var pendingTapGroup = -1
     private var pendingOverflowTap = false
     private var pointerClick = false
+    private var horizontalZoomFactor = 1f
+    private var multiTouch = false
+    private var pinchStartSpan = 0f
+    private var pinchStartZoom = 1f
+    private var pinchPointerA = -1
+    private var pinchPointerB = -1
+    private var scrubStarted = false
 
-    private fun pixelsPerQuarterBeat(): Float = max(dp(32f), width.toFloat() / 10f)
+    private fun pixelsPerQuarterBeat(): Float = max(dp(32f), width.toFloat() / 10f) * horizontalZoomFactor
     private fun viewport() = BeatViewport(quarterBeatPosition, width * 0.34f,
         pixelsPerQuarterBeat(), 0f, width.toFloat())
 
@@ -240,6 +251,9 @@ class ScoreStaffView @JvmOverloads constructor(
                     lane, headShifts[groupIndex].getValue(note.pitch), spelling)
             }
         maxHeadShift = notes.maxOfOrNull { abs(it.headShift) } ?: 0f
+        staffExtent = notes.fold(StaffExtent()) { extent, note ->
+            extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane))
+        }
         noteTreeEnd = DoubleArray(notes.size)
         groupEnds = DoubleArray(groups.size) { index ->
             groups[index].notes.maxOfOrNull { maxOf(it.startTick, it.endTick).toDouble() / (localScore?.ppq ?: 1) }
@@ -264,11 +278,13 @@ class ScoreStaffView @JvmOverloads constructor(
         gridNumberWidths = FloatArray(0); gridMeterWidths = FloatArray(0)
         gridFrom = Double.POSITIVE_INFINITY; gridTo = Double.NEGATIVE_INFINITY
         rebuildLabels()
+        rebuildVerticalGeometry()
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         rebuildLabels()
+        rebuildVerticalGeometry()
         accidentalCacheHash = Long.MIN_VALUE
         gridFrom = Double.POSITIVE_INFINITY; gridTo = Double.NEGATIVE_INFINITY
     }
@@ -386,11 +402,27 @@ class ScoreStaffView @JvmOverloads constructor(
         gridMeterWidths = FloatArray(grid.size) { textPaint.measureText(gridMeters[it]) }
     }
 
-    private fun laneOffset(lane: Int): Float = when (lane % 5) {
+    private fun laneOffsetUnits(lane: Int): Float = when (lane % 5) {
         1 -> 0.11f; 2 -> -0.11f; 3 -> 0.2f; 4 -> -0.2f; else -> 0f
-    } * lineGap
+    }
+
+    private fun laneOffset(lane: Int): Float = laneOffsetUnits(lane) * lineGap
 
     private fun noteY(note: DrawNote): Float = staffCenter - note.step * lineGap / 2f + laneOffset(note.lane)
+
+    private fun rebuildVerticalGeometry() {
+        val h = height.toFloat()
+        val captionMetrics = textPaint.fontMetrics
+        val captionHeight = captionMetrics.descent - captionMetrics.ascent + dp(3f)
+        captionBottom = minOf(captionHeight, h * 0.12f)
+        barBandBottom = minOf(captionBottom + captionHeight, h * 0.25f)
+        labelBandTop = maxOf(barBandBottom + dp(12f), h - rowHeight * labelRows - dp(4f))
+        val available = (labelBandTop - barBandBottom - dp(6f)).coerceAtLeast(1f)
+        lineGap = minOf(h * 0.105f, available / (staffExtent.top + staffExtent.bottom))
+        staffCenter = barBandBottom + (available - (staffExtent.top + staffExtent.bottom) * lineGap) / 2f + staffExtent.top * lineGap
+        headX = lineGap * 0.52f; headY = lineGap * 0.33f
+        staffTop = staffCenter - lineGap * 2f; staffBottom = staffCenter + lineGap * 2f
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -401,21 +433,6 @@ class ScoreStaffView @JvmOverloads constructor(
         val range = viewport.visibleBeatRange(overscan)
         selectVisible(range.start, range.endInclusive)
         val captionMetrics = textPaint.fontMetrics
-        val captionHeight = captionMetrics.descent - captionMetrics.ascent + dp(3f)
-        captionBottom = minOf(captionHeight, h * 0.12f)
-        val barBandBottom = minOf(captionBottom + captionHeight, h * 0.25f)
-        labelBandTop = maxOf(barBandBottom + dp(12f), h - rowHeight * labelRows - dp(4f))
-        val available = (labelBandTop - barBandBottom - dp(6f)).coerceAtLeast(1f)
-        var topUnits = 2f; var bottomUnits = 2f
-        for (v in 0 until visibleCount) {
-            val note = notes[visibleNotes[v]]
-            topUnits = max(topUnits, note.step / 2f + 1.7f + 0.55f)
-            bottomUnits = max(bottomUnits, -note.step / 2f + if (note.spelling.accidental != 0) 0.95f else 0.55f)
-        }
-        lineGap = minOf(h * 0.105f, available / (topUnits + bottomUnits))
-        staffCenter = barBandBottom + (available - (topUnits + bottomUnits) * lineGap) / 2f + topUnits * lineGap
-        headX = lineGap * 0.52f; headY = lineGap * 0.33f
-        staffTop = staffCenter - lineGap * 2f; staffBottom = staffCenter + lineGap * 2f
         val localScore = score
         canvas.save()
         canvas.clipRect(0f, barBandBottom, w, labelBandTop)
@@ -759,18 +776,62 @@ class ScoreStaffView @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 scrubbing = true
+                multiTouch = false; scrubStarted = false
                 scrubStartX = event.x; scrubStartY = event.y
                 scrubStartPosition = quarterBeatPosition
                 movedBeyondSlop = false
                 pendingOverflowTap = overflowCount > 0 && event.x >= overflowLeft && event.x <= overflowRight && event.y <= overflowBottom + dp(6f)
                 pendingTapGroup = if (pendingOverflowTap) -1 else hitGroup(event.x, event.y)
                 parent?.requestDisallowInterceptTouchEvent(true)
-                onPositionScrubStart?.invoke(scrubStartPosition)
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                // Once multiple fingers appear, never turn the remaining finger into a seek/tap.
+                multiTouch = true
+                pendingTapGroup = -1; pendingOverflowTap = false
+                if (scrubStarted) {
+                    scrubStarted = false
+                    onPositionScrubFinished?.invoke(quarterBeatPosition)
+                }
+                if (event.pointerCount == 2) {
+                    pinchPointerA = event.getPointerId(0); pinchPointerB = event.getPointerId(1)
+                    pinchStartSpan = abs(event.getX(0) - event.getX(1))
+                    pinchStartZoom = horizontalZoomFactor
+                }
+                return true
+            }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // End this pinch on any pointer transition; ignore movement until all fingers lift.
+                pinchPointerA = -1; pinchPointerB = -1
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!scrubbing) return false
+                if (multiTouch) {
+                    val a = event.findPointerIndex(pinchPointerA)
+                    val b = event.findPointerIndex(pinchPointerB)
+                    if (event.pointerCount == 2 && a >= 0 && b >= 0) {
+                        val span = abs(event.getX(a) - event.getX(b))
+                        if (pinchStartSpan < touchSlop * 2f) {
+                            // Near-vertical fingers need a usable horizontal baseline first.
+                            if (span >= touchSlop * 2f) { pinchStartSpan = span; pinchStartZoom = horizontalZoomFactor }
+                        } else {
+                            val zoom = horizontalZoom(pinchStartZoom, pinchStartSpan, span)
+                            if (zoom != horizontalZoomFactor) {
+                                horizontalZoomFactor = zoom
+                                rebuildLabels()
+                                invalidate()
+                            }
+                        }
+                    }
+                    return true
+                }
                 if (abs(event.x - scrubStartX) > touchSlop || abs(event.y - scrubStartY) > touchSlop) movedBeyondSlop = true
+                if (!movedBeyondSlop) return true
+                if (!scrubStarted) {
+                    scrubStarted = true
+                    onPositionScrubStart?.invoke(scrubStartPosition)
+                }
                 val deltaBeats = (event.x - scrubStartX) / pixelsPerQuarterBeat()
                 val maxBeat = localScore.tickToQuarterBeats(localScore.totalTicks)
                 val newPosition = (scrubStartPosition - deltaBeats).coerceIn(0.0, maxBeat)
@@ -783,8 +844,10 @@ class ScoreStaffView @JvmOverloads constructor(
                 scrubbing = false
                 if (abs(event.x - scrubStartX) > touchSlop || abs(event.y - scrubStartY) > touchSlop) movedBeyondSlop = true
                 parent?.requestDisallowInterceptTouchEvent(false)
-                onPositionScrubFinished?.invoke(quarterBeatPosition)
-                if (event.actionMasked == MotionEvent.ACTION_UP) {
+                if (scrubStarted) onPositionScrubFinished?.invoke(quarterBeatPosition)
+                scrubStarted = false
+                pinchPointerA = -1; pinchPointerB = -1
+                if (event.actionMasked == MotionEvent.ACTION_UP && !multiTouch) {
                     pointerClick = true
                     if (movedBeyondSlop) { pendingTapGroup = -1; pendingOverflowTap = false }
                     performClick()
