@@ -1,103 +1,46 @@
-# TempoScore scaffold
+# TempoScore
 
-Android practice assistant scaffold for **Android 10 / API 29**.
+An Android practice assistant that displays notes from a MIDI file and follows your performance using the microphone.
 
-The application loads a Standard MIDI File, uses it as the score/tempo reference, listens to the live ensemble through the phone microphone, estimates live beat/tempo, advances a live musical transport, and shows where the player is plus the notes coming next.
+**[Download the latest release](https://github.com/einhander/scoretracker/releases/latest)**
 
-Important product constraints:
+## Screenshot
 
-- microphone input only for live following;
-- **no MIDI keyboard/controller input**;
-- **no pitch/note recognition from audio**;
-- MIDI supplies notes, time signatures and the initial/reference tempo;
-- audio supplies rhythmic evidence (onsets / beat / tempo / phase);
-- absolute song position is acquired by **content-aware score following** (matching the live
-  audio against the MIDI score) and then tracked continuously; the user can start from the
-  beginning or reposition with Reset.
+![TempoScore — landscape score view](docs/images/screenshot.jpg)
 
-## Toolchain
+## Features
 
-This scaffold intentionally follows the useful parts of `einhander/piano`:
+- View MIDI notes, durations, measures, and tempo.
+- Select an individual instrument track or show all tracks.
+- Follow live performance with tempo and position estimates.
+- Pinch horizontally to zoom; drag to move through the score.
+- Play an MP3 to test score following.
+- Remember separate folders for MIDI and MP3 files.
 
-- Android Gradle Plugin 8.2.0
-- Kotlin 1.9.20
-- Gradle 8.5
-- JDK 17
-- compileSdk 34
-- **targetSdk 29**
-- minSdk 26
-- NDK 26.1.10909125
-- CMake 3.22.1
-- C++17
-- arm64-v8a + armeabi-v7a
+## Getting Started
 
-Native audio uses **Oboe 1.10.0 through Maven Prefab**. FluidSynth and external MIDI device support are intentionally not included.
+1. Download and install the APK from [Releases](https://github.com/einhander/scoretracker/releases).
+2. Tap **Load MIDI**, grant access to a folder, and select a `.mid` or `.midi` file.
+3. Choose the track you want to follow.
+4. Tap **Listen**, allow microphone access, and start playing.
 
-## Build
+For testing with a recording, open the **MP3** panel, select a matching `.mp3` file, and press **Play**.
 
-1. Install JDK 17, Android SDK platform 34, NDK `26.1.10909125`, and CMake `3.22.1`.
-2. Copy `local.properties.template` to `local.properties` and set `sdk.dir`.
-   For this machine, set environment:
-   `export JAVA_HOME=/home/einhander/tools/jdk-17.0.14+7`
-   `export ANDROID_HOME=/home/einhander/tools/android-sdk` and `export ANDROID_SDK_ROOT=/home/einhander/tools/android-sdk`
-3. Run:
+> The current interface uses Russian labels.
 
-```bash
-./build.sh debug
-```
+## Controls
 
-or:
+- **One-finger horizontal drag:** change score position.
+- **Two-finger horizontal pinch:** zoom out or in, from 0.1× to 4×.
+- **Tap a note or `+N`:** view note details.
+- **Reset position:** restart position acquisition.
 
-```bash
-./gradlew :app:assembleDebug
-```
+## Limitations
 
-The official Gradle 8.5 wrapper is included; `./gradlew` works out of the box (distribution is fetched on first use if not cached).
+Score following is experimental and may lose position in silence, noise, or repeated passages. MIDI supplies the displayed notes; TempoScore does not transcribe audio or check every note you play.
 
-## What already exists
+The built-in file browser stays in landscape. Initial folder access uses Android’s system picker, whose orientation depends on your device.
 
-- SAF MIDI file picker;
-- dependency-free SMF 0/1 parser (PPQ timing);
-- Note On/Off, tempo and time-signature parsing;
-- live score position model;
-- simple five-line staff-like preview with fixed playhead;
-- Now / Next note labels;
-- JNI boundary;
-- Oboe low-latency microphone input;
-- multiband spectral-flux tempo estimator with fixed history/autocorrelation;
-- delayed-confidence lock, weak MIDI prior, time-smoothed transport; phase disabled in first stage;
-- **content-aware score following**: STFT/chroma/spectral-flux feature analysis, a constrained
-  DTW matcher (global acquisition + local correction + repeat disambiguation), and a
-  position-tracking state machine (`Acquiring → Locked → Weak → Reacquiring`) that corrects the
-  live transport;
-- tempo-map integration (Kotlin `tempoAtQuarterBeat` / `quarterBeatToSeconds` / `secondsToQuarterBeat`);
-- JVM parser + tempo-map regression tests; host C++ unit tests (ring, DSP, DTW matcher, position
-  state machine, transport correction policy).
+## Support
 
-## What is deliberately not production-ready
-
-Tempo tracking uses multiband spectral flux in the analyzer worker, fixed history and autocorrelation; lock is delayed by confidence and MIDI tempo is only a weak prior.
-
-Likewise, `ScoreStaffView` is a visualization placeholder, not a notation engraver. Proper clefs, accidentals, voices, beams, ties, rhythmic quantization and multi-staff layout belong to a later milestone.
-
-The score-following matcher is a first production pass: it is tuned for the common case (a
-recognizable ensemble, a MIDI that matches the live material) and degrades to `Weak`/`Reacquiring`
-rather than silently jumping to the wrong section. Live-audio acceptance is manual (no emulator on
-the build machine); the matcher is covered by host C++ unit tests and the transport correction
-policy by deterministic host tests.
-
-## Key files
-
-- `SPEC.md` — product/technical specification.
-- `AGENT_INSTRUCTIONS.md` — detailed implementation guide for a coding agent.
-- `docs/architecture.md` — component and threading model.
-- `docs/realtime-rules.md` — hard real-time rules.
-- `app/src/main/cpp/beat/BeatTracker.*` — fixed-history spectral-flux/autocorrelation tempo estimator (phase disabled initially).
-- `app/src/main/cpp/audio/OboeInputEngine.*` — microphone backend (owns the score reference + matcher).
-- `app/src/main/cpp/audio/AudioAnalyzer.*` — non-RT feature analysis (STFT/chroma/flux) + matcher cadence.
-- `app/src/main/cpp/dsp/*` — radix-2 FFT, STFT, chroma, spectral flux (own minimal DSP, no third-party).
-- `app/src/main/cpp/position/DtwMatcher.*` — constrained DTW (global/local) + repeat disambiguation.
-- `app/src/main/cpp/position/PositionMatcher.*` — position-tracking state machine + confidence policy.
-- `app/src/main/cpp/transport/LiveTransport.*` — musical transport + position correction (slew/relocate).
-- `app/src/main/cpp/native_audio_jni.cpp` — JNI boundary (12-field state, score reference, reacquire).
-- `app/src/main/cpp/tests/host/*` — host C++ unit tests (run via CTest, no GTest).
+Found a problem? [Report an issue](https://github.com/einhander/scoretracker/issues) with your app version, device model, and steps to reproduce it.
