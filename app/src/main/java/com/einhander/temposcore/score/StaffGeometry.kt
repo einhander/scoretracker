@@ -6,7 +6,7 @@ import com.einhander.temposcore.midi.MidiScore
 /** Horizontal-only magnification; the transport beat remains anchored at the cursor. */
 fun horizontalZoom(startZoom: Float, startSpan: Float, span: Float): Float {
     if (!startSpan.isFinite() || !span.isFinite() || startSpan <= 0f || span <= 0f) return startZoom
-    return (startZoom * span / startSpan).coerceIn(0.5f, 4f)
+    return (startZoom * span / startSpan).coerceIn(0.1f, 4f)
 }
 
 /** Full-selection extents in line-gap units, independent of the visible beat window. */

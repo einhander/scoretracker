@@ -12,7 +12,9 @@ import org.junit.Test
 class StaffGeometryTest {
     @Test fun horizontalPinchIsBoundedAndRejectsDegenerateSpans() {
         assertEquals(2f, horizontalZoom(1f, 100f, 200f), 0f)
-        assertEquals(0.5f, horizontalZoom(1f, 100f, 1f), 0f)
+        assertEquals(0.1f, horizontalZoom(1f, 100f, 1f), 0f)
+        assertEquals(0.25f, horizontalZoom(1f, 100f, 25f), 0f)
+        assertEquals(0.2f, horizontalZoom(0.1f, 100f, 200f), 0f)
         assertEquals(4f, horizontalZoom(2f, 100f, 1000f), 0f)
         assertEquals(2f, horizontalZoom(2f, 0f, 100f), 0f)
         assertEquals(2f, horizontalZoom(2f, 100f, Float.NaN), 0f)
@@ -26,6 +28,25 @@ class StaffGeometryTest {
         assertEquals(base.cursorX, zoomed.beatToX(base.quarterBeatPosition), 0f)
         assertEquals(100f, zoomed.beatToX(13.25) - zoomed.cursorX, 0f)
         assertTrue(zoomed.visibleBeatRange().endInclusive < base.visibleBeatRange().endInclusive)
+    }
+
+    @Test fun minimumZoomExpandsRangeWithoutMovingCursorOrClippingHeldNotes() {
+        val base = BeatViewport(80.0, 170f, 50f, 0f, 500f)
+        val overview = base.copy(pixelsPerQuarterBeat = base.pixelsPerQuarterBeat * horizontalZoom(1f, 100f, 10f))
+        val range = overview.visibleBeatRange()
+        val baseRange = base.visibleBeatRange()
+        assertEquals(10.0 * (baseRange.endInclusive - baseRange.start), range.endInclusive - range.start, 1e-5)
+        assertEquals(46.0, range.start, 1e-5)
+        assertEquals(146.0, range.endInclusive, 1e-5)
+        assertEquals(base.cursorX, overview.beatToX(base.quarterBeatPosition), 0f)
+        for (x in listOf(0f, overview.cursorX, 250f, 500f)) {
+            assertEquals(x, overview.beatToX(overview.xToBeat(x)), 1e-4f)
+        }
+        assertEquals(NoteInterval(46.0, 146.0), NoteInterval(0.0, 200.0).visibleSegment(range.start, range.endInclusive))
+        val boundaries = ScoreNavigator.measureBoundaries(score(), range.start, range.endInclusive)
+        assertEquals(48.0, boundaries.first().quarterBeat, 0.0)
+        assertEquals(144.0, boundaries.last().quarterBeat, 0.0)
+        assertEquals(25, boundaries.size)
     }
 
     @Test fun fullSelectionExtentIncludesRemoteExtremesAndIsOrderIndependent() {

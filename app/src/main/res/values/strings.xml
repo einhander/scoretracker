@@ -1,4 +1,22 @@
 <resources>
+    <string name="browser_title">Открыть MIDI</string>
+    <string name="browser_change_folder">Сменить папку</string>
+    <string name="browser_choose_folder">Выбрать папку</string>
+    <string name="browser_close">Закрыть</string>
+    <string name="browser_up">Вверх</string>
+    <string name="browser_refresh">Обновить</string>
+    <string name="browser_root">Выбранная папка</string>
+    <string name="browser_folder">Папка</string>
+    <string name="browser_midi">MIDI</string>
+    <string name="browser_hint">Папки и файлы .mid / .midi</string>
+    <string name="browser_system_picker">Системный выбор</string>
+    <string name="browser_no_folder">Выберите папку с MIDI. Разрешение запрашивается в системном окне; затем файлы можно выбирать здесь.</string>
+    <string name="browser_loading">Загрузка папки…</string>
+    <string name="browser_empty">В этой папке нет подпапок или MIDI-файлов.</string>
+    <string name="browser_error">Не удалось открыть папку. Повторите попытку, смените папку или используйте системный выбор.</string>
+    <string name="browser_access_error">Доступ к папке потерян. Выберите папку снова или используйте системный выбор.</string>
+    <string name="browser_provider_loading">Провайдер загружает файлы. Нажмите «Обновить» через несколько секунд.</string>
+    <string name="browser_grant_error">Не удалось сохранить доступ к папке. Используйте системный выбор файла.</string>
     <string name="app_name">TempoScore</string>
     <string name="load_midi">Загрузить MIDI</string>
     <string name="start_listening">Слушать</string>

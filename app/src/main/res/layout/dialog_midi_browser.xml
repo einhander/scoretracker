@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:paddingHorizontal="12dp" android:background="@color/surface">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/browser_title" android:textSize="18sp" android:textStyle="bold" />
+        <Button android:id="@+id/chooseFolder" style="@style/Widget.TempoScore.QuietButton"
+            android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/browser_change_folder" />
+        <Button android:id="@+id/closeBrowser" style="@style/Widget.TempoScore.QuietButton"
+            android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/browser_close" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical" android:background="@color/surface_alt">
+        <Button android:id="@+id/upFolder" style="@style/Widget.TempoScore.QuietButton"
+            android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/browser_up" />
+        <TextView android:id="@+id/folderPath" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1" android:ellipsize="start" />
+        <Button android:id="@+id/retryFolder" style="@style/Widget.TempoScore.QuietButton"
+            android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/browser_refresh" />
+    </LinearLayout>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:background="@color/white">
+        <ListView android:id="@+id/documents" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:divider="@color/surface_alt" android:dividerHeight="1dp" />
+        <TextView android:id="@+id/browserStatus" android:layout_width="match_parent" android:layout_height="match_parent"
+            android:padding="16dp" android:gravity="center" android:textSize="14sp" android:accessibilityLiveRegion="polite" />
+    </FrameLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+        <TextView android:id="@+id/browserHint" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/browser_hint" android:textSize="12sp" android:maxLines="2" android:ellipsize="end" />
+        <Button android:id="@+id/systemPicker" style="@style/Widget.TempoScore.QuietButton"
+            android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/browser_system_picker" />
+    </LinearLayout>
+</LinearLayout>

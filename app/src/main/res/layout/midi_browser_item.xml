@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="52dp"
+    android:paddingHorizontal="16dp" android:paddingVertical="6dp" android:gravity="center_vertical">
+    <TextView android:id="@+id/documentKind" android:layout_width="72dp" android:layout_height="wrap_content"
+        android:textSize="12sp" android:textColor="@color/accent" android:textStyle="bold" />
+    <TextView android:id="@+id/documentName" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:textSize="16sp" android:textColor="@color/ink" android:maxLines="2" android:ellipsize="middle" />
+</LinearLayout>

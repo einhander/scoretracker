@@ -1,11 +1,14 @@
 package com.einhander.temposcore
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.Choreographer
 import android.view.View
@@ -32,12 +35,14 @@ import com.einhander.temposcore.score.keySignatureAt
 import com.einhander.temposcore.score.pitchName
 import com.einhander.temposcore.score.spellMidiPitch
 import com.einhander.temposcore.ui.NoteSpellingCache
+import com.einhander.temposcore.ui.browser.MidiBrowserDialog
 import com.einhander.temposcore.transport.PositionTrackingState
 import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
+import java.lang.ref.WeakReference
 import kotlin.math.abs
 
-class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener {
+class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener, MidiBrowserDialog.Host {
     private lateinit var binding: ActivityMainBinding
     private var score: MidiScore? = null
     private var trackSelection: TrackSelection = TrackSelection.All
@@ -61,9 +66,29 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var lastNativeRunning = false
     private var lastPositionState: PositionTrackingState? = null
     private var lastDiagnosticSampleNs = 0L
+    private var midiLoadGeneration = 0
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
+    }
+
+    private val openMidiTree = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val previous = prefs.getString(KEY_MIDI_TREE, null)
+                prefs.edit().putString(KEY_MIDI_TREE, uri.toString()).apply()
+                if (previous != null && previous != uri.toString()) {
+                    try {
+                        contentResolver.releasePersistableUriPermission(Uri.parse(previous), Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    } catch (_: SecurityException) { /* Old permission may already have been revoked. */ }
+                }
+            } catch (_: SecurityException) {
+                Toast.makeText(this, R.string.browser_grant_error, Toast.LENGTH_LONG).show()
+            }
+        }
+        showMidiBrowser()
     }
 
     private val openTestAudio = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -133,7 +158,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.scoreView.onNoteGroupsRequested = { groups -> showNoteGroups(groups) }
 
         binding.loadMidiButton.setOnClickListener {
-            openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+            if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null) == null) {
+                chooseMidiFolder()
+            } else showMidiBrowser()
         }
 
         binding.listenButton.setOnClickListener {
@@ -199,6 +226,23 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
     }
 
+    private fun showMidiBrowser() {
+        if (supportFragmentManager.isStateSaved || supportFragmentManager.findFragmentByTag(MidiBrowserDialog.TAG) != null) return
+        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null)
+        MidiBrowserDialog.create(tree).show(supportFragmentManager, MidiBrowserDialog.TAG)
+    }
+
+    override fun chooseMidiFolder() {
+        val tree = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_MIDI_TREE, null)?.let(Uri::parse)
+        openMidiTree.launch(tree)
+    }
+
+    override fun chooseMidiWithSystemPicker() {
+        openMidi.launch(arrayOf("audio/midi", "audio/x-midi", "application/octet-stream"))
+    }
+
+    override fun selectBrowserMidi(uri: Uri) { loadMidi(uri) }
+
     override fun onResume() {
         super.onResume()
         restoreImmersiveMode()
@@ -235,6 +279,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     override fun onDestroy() {
+        midiLoadGeneration++
         testAudioPlayer.release()
         if (nativeInitialized) NativeAudioBridge.stop()
         super.onDestroy()
@@ -248,45 +293,54 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun loadMidi(uri: Uri) {
         binding.loadMidiButton.isEnabled = false
+        val token = ++midiLoadGeneration
+        val weak = WeakReference(this)
+        val resolver = applicationContext.contentResolver
+        val handler = Handler(Looper.getMainLooper())
         Thread {
-            try {
-                val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            val result = runCatching {
+                val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: error("Could not read selected file")
                 val parsed = MidiFileParser.parse(bytes)
-                val name = displayName(uri) ?: "MIDI"
-                runOnUiThread {
-                    testAudioPlayer.stop()
-                    if (nativeInitialized && NativeAudioBridge.state().running) {
-                        NativeAudioBridge.stop()
-                    }
-                    score = parsed
-                    noteSpellingCache = NoteSpellingCache(parsed, parsed.notes, accidentalPreference)
-                    val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
-                    trackSelection = defaultTrack?.let { TrackSelection.Track(it) }
-                        ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
-                        ?: TrackSelection.All
-                    visibleNotes = parsed.visibleNotes(trackSelection)
-                    binding.scoreView.trackSelection = trackSelection
-                    populateTrackSelector(parsed)
-                    expectedBpm = parsed.initialBpm
-                    binding.scoreView.score = parsed
-                    binding.fileNameText.text = name
-                    binding.fileNameText.contentDescription = name
-                    binding.listenButton.isEnabled = true
-                    binding.resetButton.isEnabled = true
-                    configureNativeEngine()
-                    sendScoreReferenceToNative(parsed)
-                    onTestAudioStateChanged(testAudioPlayer.state)
-                    updateUiFromTransport()
+                val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0) else null
+                } ?: "MIDI"
+                parsed to name
+            }
+            handler.post {
+                val activity = weak.get()
+                if (activity != null && !activity.isDestroyed && !activity.isFinishing && activity.midiLoadGeneration == token) {
+                    result.fold(onSuccess = { (parsed, name) -> activity.applyLoadedMidi(parsed, name) }, onFailure = { error ->
+                        Toast.makeText(activity, activity.getString(R.string.midi_error, error.message), Toast.LENGTH_LONG).show()
+                    })
+                    activity.binding.loadMidiButton.isEnabled = true
                 }
-            } catch (t: Throwable) {
-                runOnUiThread {
-                    Toast.makeText(this, getString(R.string.midi_error, t.message), Toast.LENGTH_LONG).show()
-                }
-            } finally {
-                runOnUiThread { binding.loadMidiButton.isEnabled = true }
             }
         }.start()
+    }
+
+    private fun applyLoadedMidi(parsed: MidiScore, name: String) {
+        testAudioPlayer.stop()
+        if (nativeInitialized && NativeAudioBridge.state().running) NativeAudioBridge.stop()
+        score = parsed
+        noteSpellingCache = NoteSpellingCache(parsed, parsed.notes, accidentalPreference)
+        val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
+        trackSelection = defaultTrack?.let { TrackSelection.Track(it) }
+            ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
+            ?: TrackSelection.All
+        visibleNotes = parsed.visibleNotes(trackSelection)
+        binding.scoreView.trackSelection = trackSelection
+        populateTrackSelector(parsed)
+        expectedBpm = parsed.initialBpm
+        binding.scoreView.score = parsed
+        binding.fileNameText.text = name
+        binding.fileNameText.contentDescription = name
+        binding.listenButton.isEnabled = true
+        binding.resetButton.isEnabled = true
+        configureNativeEngine()
+        sendScoreReferenceToNative(parsed)
+        onTestAudioStateChanged(testAudioPlayer.state)
+        updateUiFromTransport()
     }
 
     private fun populateTrackSelector(score: MidiScore) {
@@ -698,6 +752,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val KEY_NOTE_NAMING = "note_naming"
         private const val KEY_ACCIDENTAL_PREFERENCE = "accidental_preference"
         private const val KEY_SHOW_TEST_MODE = "show_test_mode"
+        private const val KEY_MIDI_TREE = "midi_tree_uri"
         private const val MENU_NOTATION_LETTERS = 1
         private const val MENU_NOTATION_SOLFEGE = 2
         private const val MENU_SHOW_TEST_MODE = 3
