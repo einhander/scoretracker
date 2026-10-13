@@ -19,7 +19,7 @@ object NativeAudioBridge {
     external fun revokeTestSession(sessionToken: Long)
     external fun stopTest(sessionToken: Long)
     external fun stop()
-    external fun setExpectedBpm(bpm: Double)
+    external fun setExpectedBpm(bpm: Double, tempoAdjustmentBpm: Double)
     external fun resetPosition(startQuarterBeat: Double)
     external fun setManualPosition(startQuarterBeat: Double)
     external fun setScoreReference(ppq: Int, totalTicks: Long, noteChannels: IntArray, notePitches: IntArray, noteVelocities: IntArray, noteStarts: LongArray, noteEnds: LongArray, tempoTicks: LongArray, tempoValues: IntArray)

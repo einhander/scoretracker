@@ -55,8 +55,8 @@ Java_com_einhander_temposcore_NativeAudioBridge_stop(JNIEnv*, jobject) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_einhander_temposcore_NativeAudioBridge_setExpectedBpm(
-        JNIEnv*, jobject, jdouble bpm) {
-    gEngine.setExpectedBpm(bpm);
+        JNIEnv*, jobject, jdouble bpm, jdouble tempoAdjustmentBpm) {
+    gEngine.setExpectedBpm(bpm, tempoAdjustmentBpm);
 }
 
 extern "C" JNIEXPORT void JNICALL

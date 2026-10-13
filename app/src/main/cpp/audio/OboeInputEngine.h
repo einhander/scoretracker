@@ -25,7 +25,7 @@ public:
     void revokeTestSession(uint64_t sessionToken) noexcept;
     void stopTest(uint64_t sessionToken);
     void stop();
-    void setExpectedBpm(double bpm) noexcept;
+    void setExpectedBpm(double bpm, double tempoAdjustmentBpm = 0.0) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
     void setManualPosition(double startQuarterBeat) noexcept;
     // Build the score reference from the parsed MIDI and (re)create the

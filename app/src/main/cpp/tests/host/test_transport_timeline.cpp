@@ -4,6 +4,9 @@
 #include "tests/host/test_main.h"
 
 #include <cmath>
+#include <limits>
+#include <utility>
+#include <utility>
 
 using namespace temposcore;
 
@@ -314,6 +317,110 @@ void test_capture_watermark_advances_without_worker_history_drain_and_across_epo
     CHECK(diagnostics.latestHistoryFrame == 0);
 }
 
+void test_transport_user_tempo_trim_is_absolute_bounded_and_detector_independent() {
+    const auto settled = [](double trim, double expected = 120.0, double detected = 120.0) {
+        LiveTransport transport;
+        transport.configure(expected, 0.0);
+        transport.setExpectedBpm(expected, trim);
+        transport.beginStreamEpoch(1);
+        BeatObservation observation;
+        observation.detectedBpm = detected;
+        observation.confidence = 1.0f;
+        observation.tempoValid = true;
+        transport.submitTempoObservation(observation);
+        for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+            transport.processSourceFrames(480, 48000, 1, 1, frame);
+        return transport.snapshot();
+    };
+        CHECK_NEAR(settled(1.0).transportBpm, 121.0, 1e-6);
+    CHECK_NEAR(settled(-1.0).transportBpm, 119.0, 1e-6);
+    const auto detected = settled(1.0, 120.0, 135.0);
+    CHECK_NEAR(detected.transportBpm, 136.0, 1e-6);
+    CHECK_NEAR(detected.detectedBpm, 135.0, 1e-6);
+
+    LiveTransport repeated;
+    repeated.configure(120.0, 0.0);
+    repeated.beginStreamEpoch(1);
+    repeated.setExpectedBpm(120.0, 1.0);
+    repeated.setExpectedBpm(120.0, 1.0);
+    BeatObservation observation;
+    observation.detectedBpm = 120.0;
+    observation.confidence = 1.0f;
+    observation.tempoValid = true;
+    repeated.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        repeated.processSourceFrames(480, 48000, 1, 1, frame);
+    CHECK_NEAR(repeated.snapshot().transportBpm, 121.0, 1e-6);
+}
+
+void test_transport_user_tempo_trim_bounds_fallback_epochs_and_test_bypass() {
+    BeatObservation observation;
+    observation.detectedBpm = 120.0;
+    observation.confidence = 1.0f;
+    observation.tempoValid = true;
+    for (const auto [trim, expectedBpm] : {std::pair{100.0, 150.0}, std::pair{-100.0, 90.0}}) {
+        LiveTransport transport;
+        transport.configure(120.0, 0.0);
+        transport.beginStreamEpoch(1);
+        transport.setExpectedBpm(120.0, trim);
+        observation.detectedBpm = 120.0;
+        observation.confidence = 1.0f;
+        observation.tempoValid = true;
+        transport.submitTempoObservation(observation);
+        for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+            transport.processSourceFrames(480, 48000, 1, 1, frame);
+        CHECK_NEAR(transport.snapshot().transportBpm, expectedBpm, 1e-2);
+    }
+
+    LiveTransport fallback;
+    fallback.configure(120.0, 0.0);
+    fallback.beginStreamEpoch(1);
+    fallback.setExpectedBpm(120.0, 1.0);
+    fallback.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 1, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 121.0, 1e-2);
+    fallback.setExpectedBpm(120.0, 0.0);
+
+    fallback.resetPosition(5.0);
+    fallback.beginStreamEpoch(2);
+    fallback.setTempoAdjustmentEnabled(false);
+    fallback.configure(120.0, 5.0);
+    fallback.setExpectedBpm(120.0, 0.0);
+    fallback.beginStreamEpoch(3);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 3, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 120.0, 1e-6);
+
+    fallback.setExpectedBpm(120.0, std::numeric_limits<double>::quiet_NaN());
+    fallback.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 3, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 120.0, 1e-6);
+
+    fallback.configure(120.0, 0.0);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 120.0, 1e-6); // initialize clears trim.
+    fallback.setExpectedBpm(120.0, 1.0);
+    fallback.setTempoAdjustmentEnabled(true);
+    fallback.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 3, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 121.0, 1e-2);
+
+    fallback.setTempoAdjustmentEnabled(false); // startTest: no trim or old smoothed rate.
+    fallback.beginStreamEpoch(4);
+    fallback.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 4, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 120.0, 1e-6);
+    fallback.setTempoAdjustmentEnabled(true); // microphone start restores retained trim.
+    fallback.beginStreamEpoch(5);
+    fallback.submitTempoObservation(observation);
+    for (uint64_t frame = 0; frame < 48000 * 30; frame += 480)
+        fallback.processSourceFrames(480, 48000, 5, 1, frame);
+    CHECK_NEAR(fallback.snapshot().transportBpm, 121.0, 1e-2);
+}
+
 REGISTER_TEST(test_transport_observation_age_uses_historical_integrated_base);
 REGISTER_TEST(test_transport_rejects_stale_wrong_epoch_and_duplicate_observations);
 REGISTER_TEST(test_delayed_match_projection_subtracts_correction_applied_after_match_frame);
@@ -324,3 +431,5 @@ REGISTER_TEST(test_transport_history_interpolates_integrated_base_and_correction
 REGISTER_TEST(test_history_spsc_overflow_fails_closed_without_overwriting_old_slots);
 REGISTER_TEST(test_transport_missing_historical_coverage_rejects_even_young_observation);
 REGISTER_TEST(test_capture_watermark_advances_without_worker_history_drain_and_across_epochs);
+REGISTER_TEST(test_transport_user_tempo_trim_is_absolute_bounded_and_detector_independent);
+REGISTER_TEST(test_transport_user_tempo_trim_bounds_fallback_epochs_and_test_bypass);

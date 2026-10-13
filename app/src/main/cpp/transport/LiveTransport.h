@@ -41,7 +41,10 @@ public:
     void beginStreamEpoch(uint64_t streamEpoch) noexcept;
     void configure(double expectedBpm, double startQuarterBeat) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
-    void setExpectedBpm(double expectedBpm) noexcept;
+    void setExpectedBpm(double expectedBpm, double tempoAdjustmentBpm = 0.0) noexcept;
+    void setTempoAdjustmentEnabled(bool enabled) noexcept {
+        tempoAdjustmentEnabled_.store(enabled, std::memory_order_release);
+    }
     void setRunning(bool running) noexcept;
     // Publish an Idle score-following state (main thread, on stop) so the UI
     // does not keep showing a stale LOCKED/Weak state after Stop (spec §30).
@@ -111,6 +114,8 @@ private:
     double positionRt_ = 0.0;
 
     std::atomic<double> requestedExpectedBpm_{120.0};
+    std::atomic<double> requestedTempoAdjustmentBpm_{0.0};
+    std::atomic<bool> tempoAdjustmentEnabled_{true};
     std::atomic<double> requestedPosition_{0.0};
     std::atomic<uint64_t> positionGeneration_{0};
     uint64_t appliedPositionGeneration_ = 0;

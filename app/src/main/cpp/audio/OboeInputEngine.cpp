@@ -9,6 +9,7 @@ void OboeInputEngine::initialize(double expectedBpm, double startQuarterBeat) no
     if (!std::isfinite(expectedBpm)) expectedBpm = 120.0;
     expectedBpm_ = std::clamp(expectedBpm, 30.0, 300.0);
     transport_.configure(expectedBpm_, startQuarterBeat);
+    analyzer_.setExpectedBpm(expectedBpm_);
 }
 
 bool OboeInputEngine::openStream(oboe::InputPreset preset) {
@@ -57,6 +58,7 @@ bool OboeInputEngine::start() {
     capturedFrames_ = 0;
     continuityEpoch_ = 1;
     transport_.beginStreamEpoch(streamEpoch_);
+    transport_.setTempoAdjustmentEnabled(true);
     if (matcher_) matcher_->begin(); // fresh acquisition on each start
     if (!analyzer_.start(sampleRate_, expectedBpm_)) return false;
     const oboe::Result result = stream_->requestStart();
@@ -103,6 +105,7 @@ uint64_t OboeInputEngine::startTest(int32_t sampleRate, uint64_t callerSession) 
     capturedFrames_ = 0;
     continuityEpoch_ = 1;
     transport_.beginStreamEpoch(streamEpoch_);
+    transport_.setTempoAdjustmentEnabled(false);
     // Preserve test seek/restart contract: reacquire from score origin, never
     // infer score position from decoder PTS.
     transport_.resetPosition(0.0);
@@ -220,10 +223,10 @@ void OboeInputEngine::stop() {
     stopInputLocked();
 }
 
-void OboeInputEngine::setExpectedBpm(double bpm) noexcept {
+void OboeInputEngine::setExpectedBpm(double bpm, double tempoAdjustmentBpm) noexcept {
     if (!std::isfinite(bpm)) return;
     expectedBpm_ = std::clamp(bpm, 30.0, 300.0);
-    transport_.setExpectedBpm(expectedBpm_);
+    transport_.setExpectedBpm(expectedBpm_, tempoAdjustmentBpm);
     // Non-resetting: safe during tempo-region crossings; analyzer preserves
     // accumulated flux history while only updating its MIDI tempo prior.
     analyzer_.setExpectedBpm(expectedBpm_);

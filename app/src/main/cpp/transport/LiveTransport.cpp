@@ -26,6 +26,8 @@ void LiveTransport::beginStreamEpoch(uint64_t streamEpoch) noexcept {
     lastAppliedObservationSequence_ = 0;
     lastContinuityEpochRt_ = 0;
     remainingPositionErrorRt_ = 0.0;
+    currentBpmRt_ = requestedExpectedBpm_.load(std::memory_order_relaxed);
+    publishedBpm_.store(currentBpmRt_, std::memory_order_relaxed);
     invalidatePositionState();
     callbackHistory_->clear();
     historyChannel_->clearStopped();
@@ -39,6 +41,7 @@ void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexc
     if (!std::isfinite(expectedBpm)) expectedBpm = 120.0;
     expectedBpm = std::clamp(expectedBpm, 30.0, 300.0);
     requestedExpectedBpm_.store(expectedBpm, std::memory_order_relaxed);
+    requestedTempoAdjustmentBpm_.store(0.0, std::memory_order_relaxed);
     requestedPosition_.store(std::max(0.0, startQuarterBeat), std::memory_order_relaxed);
     positionGeneration_.fetch_add(1, std::memory_order_release);
     expectedBpmRt_ = expectedBpm;
@@ -67,10 +70,13 @@ void LiveTransport::resetPosition(double startQuarterBeat) noexcept {
     publishedPositionState_.store(0, std::memory_order_relaxed);
 }
 
-void LiveTransport::setExpectedBpm(double expectedBpm) noexcept {
+void LiveTransport::setExpectedBpm(double expectedBpm, double tempoAdjustmentBpm) noexcept {
     if (!std::isfinite(expectedBpm)) return;
     const double clamped = std::clamp(expectedBpm, 30.0, 300.0);
     requestedExpectedBpm_.store(clamped, std::memory_order_relaxed);
+    const double adjustment = std::isfinite(tempoAdjustmentBpm)
+        ? std::clamp(tempoAdjustmentBpm, -30.0, 30.0) : 0.0;
+    requestedTempoAdjustmentBpm_.store(adjustment, std::memory_order_relaxed);
     if (!running_.load(std::memory_order_relaxed)) publishedBpm_.store(clamped, std::memory_order_relaxed);
 }
 
@@ -264,11 +270,15 @@ void LiveTransport::processFramesImpl(int32_t numFrames, int32_t sampleRate,
     const double dt = static_cast<double>(numFrames) / sampleRate;
     const double tau = valid ? (confidence >= 0.75 ? 0.7 : 1.2) : 4.0;
     const double alpha = 1.0 - std::exp(-dt / tau);
-    const double boundedTarget = valid
-        ? std::clamp(target, expectedBpmRt_ * 0.55, expectedBpmRt_ * 1.80)
-        : expectedBpmRt_;
+    expectedBpmRt_ = requestedExpectedBpm_.load(std::memory_order_relaxed);
+    const double adjustment = tempoAdjustmentEnabled_.load(std::memory_order_relaxed)
+        ? requestedTempoAdjustmentBpm_.load(std::memory_order_relaxed) : 0.0;
+    const double rawTarget = valid ? target : expectedBpmRt_;
+    const double boundedTarget = std::clamp(rawTarget + adjustment,
+                                            expectedBpmRt_ * 0.55, expectedBpmRt_ * 1.80);
     currentBpmRt_ += alpha * (boundedTarget - currentBpmRt_);
-    currentBpmRt_ = std::clamp(currentBpmRt_, expectedBpmRt_ * 0.55, expectedBpmRt_ * 1.80);
+    currentBpmRt_ = std::clamp(currentBpmRt_, expectedBpmRt_ * 0.55,
+                               expectedBpmRt_ * 1.80);
 
     const double baseDelta = (currentBpmRt_ / 60.0) * dt;
     positionRt_ += baseDelta;

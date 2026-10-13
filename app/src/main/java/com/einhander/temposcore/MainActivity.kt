@@ -57,6 +57,20 @@ internal fun collapsedPanelHeight(expandedHeight: Int, density: Float): Int {
 
 internal data class TransportControlState(val listenEnabled: Boolean, val resetEnabled: Boolean, val stopping: Boolean)
 
+internal data class TempoAdjustmentControls(val value: Int, val signed: String, val decreaseEnabled: Boolean, val increaseEnabled: Boolean)
+
+internal fun tempoAdjustmentControls(saved: Int, testActive: Boolean): TempoAdjustmentControls {
+    val value = saved.coerceIn(-30, 30)
+    return TempoAdjustmentControls(value, if (value > 0) "+$value" else value.toString(),
+        !testActive && value > -30, !testActive && value < 30)
+}
+
+internal fun nextTempoAdjustment(current: Int, delta: Int, testActive: Boolean): Int {
+    require(delta == -1 || delta == 1)
+    val bounded = current.coerceIn(-30, 30)
+    return if (testActive) bounded else (bounded + delta).coerceIn(-30, 30)
+}
+
 internal fun transportControlState(scoreLoaded: Boolean, initialized: Boolean, running: Boolean,
     testActive: Boolean, busy: Boolean): TransportControlState {
     val ready = scoreLoaded && initialized
@@ -77,6 +91,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var visibleNotes: List<MidiNote> = emptyList()
     private var spinnerPopulating = false
     private var expectedBpm = 120.0
+    private var tempoAdjustmentBpm = 0
     private var nativeInitialized = false
     private var frameLoopActive = false
     private lateinit var testAudioPlayer: TestAudioPlayer
@@ -145,6 +160,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         setContentView(binding.root)
         testAudioPlayer = TestAudioPlayer(this, this)
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        tempoAdjustmentBpm = tempoAdjustmentControls(prefs.getInt(KEY_TEMPO_ADJUSTMENT, 0), false).value
+        prefs.edit().putInt(KEY_TEMPO_ADJUSTMENT, tempoAdjustmentBpm).apply()
         durationDisplay = DurationDisplay.entries.firstOrNull { it.name == prefs.getString(KEY_DURATION_DISPLAY, null) }
             ?: DurationDisplay.Symbols
         pitchColors = prefs.getBoolean(KEY_PITCH_COLORS, false)
@@ -206,6 +223,12 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val resetClick = View.OnClickListener { resetScorePosition() }
         binding.resetButton.setOnClickListener(resetClick)
         binding.compactResetButton.setOnClickListener(resetClick)
+        val decreaseTempo = View.OnClickListener { changeTempoAdjustment(-1) }
+        val increaseTempo = View.OnClickListener { changeTempoAdjustment(1) }
+        binding.tempoDecreaseButton.setOnClickListener(decreaseTempo)
+        binding.compactTempoDecreaseButton.setOnClickListener(decreaseTempo)
+        binding.tempoIncreaseButton.setOnClickListener(increaseTempo)
+        binding.compactTempoIncreaseButton.setOnClickListener(increaseTempo)
 
         binding.loadTestAudioButton.setOnClickListener {
             openFileBrowser(BrowserMode.MP3)
@@ -290,7 +313,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val density = resources.displayMetrics.density
         val stacked = width > 0 && width / density < 276f + 330f * resources.configuration.fontScale
         binding.compactPanel.orientation = if (stacked) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
-        binding.compactTempos.layoutParams = (binding.compactTempos.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
+        binding.compactMetricsContainer.layoutParams = (binding.compactMetricsContainer.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
             this.width = if (stacked) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
             weight = if (stacked) 0f else 1f
         }
@@ -530,8 +553,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         if (!nativeInitialized) {
             NativeAudioBridge.initialize(expectedBpm, 0.0)
             nativeInitialized = true
+            // initialize resets native trim; restore the saved absolute correction immediately.
+            NativeAudioBridge.setExpectedBpm(expectedBpm, tempoAdjustmentBpm.toDouble())
         } else {
-            NativeAudioBridge.setExpectedBpm(expectedBpm)
+            NativeAudioBridge.setExpectedBpm(expectedBpm, tempoAdjustmentBpm.toDouble())
             NativeAudioBridge.resetPosition(0.0)
         }
     }
@@ -599,8 +624,33 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         NativeAudioBridge.requestGlobalReacquire()
     }
 
+    private fun changeTempoAdjustment(delta: Int) {
+        val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing || testAudioPlayer.state == TestAudioPlayer.State.Paused
+        val next = nextTempoAdjustment(tempoAdjustmentBpm, delta, testActive)
+        if (next == tempoAdjustmentBpm) return
+        tempoAdjustmentBpm = next
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putInt(KEY_TEMPO_ADJUSTMENT, next).apply()
+        if (nativeInitialized) NativeAudioBridge.setExpectedBpm(expectedBpm, next.toDouble())
+        updateTransportControls()
+    }
+
+    private fun updateTempoAdjustmentControls(testActive: Boolean) {
+        val controls = tempoAdjustmentControls(tempoAdjustmentBpm, testActive)
+        val label = getString(if (testActive) R.string.tempo_adjustment_mp3 else R.string.tempo_adjustment, controls.signed)
+        val labelChanged = binding.tempoAdjustmentText.text.toString() != label
+        binding.tempoAdjustmentText.text = label
+        binding.compactTempoAdjustmentText.text = label
+        binding.tempoDecreaseButton.isEnabled = controls.decreaseEnabled
+        binding.compactTempoDecreaseButton.isEnabled = binding.tempoDecreaseButton.isEnabled
+        binding.tempoIncreaseButton.isEnabled = controls.increaseEnabled
+        binding.compactTempoIncreaseButton.isEnabled = binding.tempoIncreaseButton.isEnabled
+        // MP3 explanation can need another line, especially with accessibility font sizes.
+        if (labelChanged) applyUpperPanelLayout()
+    }
+
     private fun updateTransportControls(running: Boolean = if (nativeInitialized) NativeAudioBridge.state().running else false) {
         val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing || testAudioPlayer.state == TestAudioPlayer.State.Paused
+        updateTempoAdjustmentControls(testActive)
         val controls = transportControlState(score != null, nativeInitialized, running, testActive,
             listeningStartPending || micPermissionPending)
         val label = getString(if (controls.stopping) R.string.stop_listening else R.string.start_listening)
@@ -643,7 +693,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val regionBpm = ScoreNavigator.tempoAtQuarterBeat(localScore, if (scoreScrubActive) scoreScrubPosition else authoritativePos)
         if (!scoreScrubActive && abs(regionBpm - expectedBpm) > 0.5) {
             expectedBpm = regionBpm
-            if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm)
+            if (nativeInitialized) NativeAudioBridge.setExpectedBpm(regionBpm, tempoAdjustmentBpm.toDouble())
         }
 
         binding.scoreView.quarterBeatPosition = pos
@@ -941,6 +991,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val KEY_ACCIDENTAL_PREFERENCE = "accidental_preference"
         private const val KEY_SHOW_TEST_MODE = "show_test_mode"
         private const val KEY_UPPER_PANEL_EXPANDED = "upper_panel_expanded"
+        private const val KEY_TEMPO_ADJUSTMENT = "tempo_adjustment_bpm"
         private const val KEY_DURATION_DISPLAY = "duration_display"
         private const val KEY_PITCH_COLORS = "pitch_colors"
         private const val KEY_MIDI_TREE = "midi_tree_uri"
