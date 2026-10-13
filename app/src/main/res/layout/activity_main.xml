@@ -30,9 +30,10 @@
         <TextView android:id="@+id/confidenceText" style="@style/Widget.TempoScore.Status" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="end" android:text="@string/beat_unavailable" />
     </LinearLayout>
     </LinearLayout>
-    <LinearLayout android:id="@+id/compactPanel" android:layout_width="match_parent" android:layout_height="match_parent"
+    <LinearLayout android:id="@+id/compactPanel" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
         android:orientation="horizontal" android:background="@color/surface_alt" android:gravity="center_vertical"
         android:paddingHorizontal="4dp" android:visibility="gone">
+        <LinearLayout android:id="@+id/compactControls" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center_vertical">
         <Button android:id="@+id/compactListenButton" android:layout_width="132dp" android:layout_height="48dp"
             android:minWidth="0dp" android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1"
             android:ellipsize="end" android:textAllCaps="false" android:enabled="false" android:text="@string/start_listening" />
@@ -41,10 +42,16 @@
             android:text="@string/reset_position_compact" android:contentDescription="@string/reset_position" />
         <TextView android:id="@+id/compactTrackText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
             android:paddingHorizontal="8dp" android:textSize="14sp" android:textColor="@color/muted" android:maxLines="1"
-            android:ellipsize="end" android:text="@string/no_midi" />
+             android:ellipsize="end" android:text="@string/no_midi" android:visibility="gone" />
         <ImageButton android:id="@+id/expandPanelButton" android:layout_width="48dp" android:layout_height="48dp"
             android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/arrow_down_float"
-            android:tint="@color/accent" android:contentDescription="@string/panel_expand" android:tooltipText="@string/panel_expand" />
+             android:tint="@color/accent" android:contentDescription="@string/panel_expand" android:tooltipText="@string/panel_expand" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/compactTempos" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
+            <TextView android:id="@+id/compactTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
+            <TextView android:id="@+id/compactLiveTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/accent" android:text="@string/live_unavailable" />
+            <TextView android:id="@+id/compactTransportTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/transport_unavailable" />
+        </LinearLayout>
     </LinearLayout>
     </FrameLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal">

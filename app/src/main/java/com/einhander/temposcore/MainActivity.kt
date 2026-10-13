@@ -286,7 +286,28 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val expandedHeight = binding.topPanel.measuredHeight.takeIf { it > 0 }
             ?: (124f * resources.displayMetrics.density).toInt()
         val slimHeight = collapsedPanelHeight(expandedHeight, resources.displayMetrics.density)
-        val targetHeight = if (upperPanelExpanded) android.view.ViewGroup.LayoutParams.WRAP_CONTENT else slimHeight
+        // Keep all three metrics readable: stack below controls when width or font scale needs it.
+        val density = resources.displayMetrics.density
+        val stacked = width > 0 && width / density < 276f + 330f * resources.configuration.fontScale
+        binding.compactPanel.orientation = if (stacked) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
+        binding.compactTempos.layoutParams = (binding.compactTempos.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
+            this.width = if (stacked) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
+            weight = if (stacked) 0f else 1f
+        }
+        val verticalTempos = stacked && width / density < 330f * resources.configuration.fontScale
+        binding.compactTempos.orientation = if (verticalTempos) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
+        listOf(binding.compactTempoText, binding.compactLiveTempoText, binding.compactTransportTempoText).forEach { metric ->
+            metric.layoutParams = (metric.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
+                this.width = if (verticalTempos) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
+                weight = if (verticalTempos) 0f else 1f
+            }
+        }
+        if (width > 0) {
+            binding.compactPanel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        }
+        val targetHeight = if (upperPanelExpanded) android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+            else maxOf(slimHeight, binding.compactPanel.measuredHeight)
         if (binding.topPanelContainer.layoutParams.height != targetHeight) {
             binding.topPanelContainer.layoutParams = binding.topPanelContainer.layoutParams.apply { height = targetHeight }
         }
@@ -639,6 +660,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.liveTempoText.text = getString(R.string.live_tempo,
             if (state.detectedBpm > 1.0) String.format(Locale.getDefault(), "%.1f", state.detectedBpm) else "—")
         binding.transportTempoText.text = getString(R.string.transport_tempo, state.transportBpm)
+        // Same formatted text, same snapshot, including LIVE's unavailable marker.
+        binding.compactTempoText.text = binding.tempoText.text
+        binding.compactLiveTempoText.text = binding.liveTempoText.text
+        binding.compactTransportTempoText.text = binding.transportTempoText.text
         binding.positionText.text = getString(
             R.string.position_format,
             barBeat.bar,
