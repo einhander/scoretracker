@@ -59,16 +59,19 @@ internal data class TransportControlState(val listenEnabled: Boolean, val resetE
 
 internal data class TempoAdjustmentControls(val value: Int, val signed: String, val decreaseEnabled: Boolean, val increaseEnabled: Boolean)
 
+// MP3 bypasses the correction in native transport, but users can edit the saved mic correction.
+@Suppress("UNUSED_PARAMETER")
 internal fun tempoAdjustmentControls(saved: Int, testActive: Boolean): TempoAdjustmentControls {
     val value = saved.coerceIn(-30, 30)
     return TempoAdjustmentControls(value, if (value > 0) "+$value" else value.toString(),
-        !testActive && value > -30, !testActive && value < 30)
+        value > -30, value < 30)
 }
 
+@Suppress("UNUSED_PARAMETER")
 internal fun nextTempoAdjustment(current: Int, delta: Int, testActive: Boolean): Int {
     require(delta == -1 || delta == 1)
     val bounded = current.coerceIn(-30, 30)
-    return if (testActive) bounded else (bounded + delta).coerceIn(-30, 30)
+    return (bounded + delta).coerceIn(-30, 30)
 }
 
 internal fun transportControlState(scoreLoaded: Boolean, initialized: Boolean, running: Boolean,
@@ -350,11 +353,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             val compactMetricMinimum = compactMidiWidth + 2f * maxOf(
                 textWidth(binding.compactLiveTempoText, getString(R.string.live_tempo, "999.9")),
                 textWidth(binding.compactTransportTempoText, getString(R.string.transport_tempo, 999.9))) + 16f
-            val wrapCompactControls = compactWidth < compactControlsWidth
-            binding.compactControls.orientation = if (wrapCompactControls) android.widget.LinearLayout.VERTICAL
-                else android.widget.LinearLayout.HORIZONTAL
+            // Test controls follow metrics, never consume the left action group's width.
+            // Stack the complete content on narrow screens; trailing MP3 group aligns right.
+            binding.compactControls.orientation = android.widget.LinearLayout.HORIZONTAL
             configureMetrics(binding.compactContent, binding.compactTempos, compactWidth,
-                if (wrapCompactControls) 180f else compactControlsWidth,
+                compactControlsWidth,
                 listOf(binding.compactMidiTempoGroup, binding.compactLiveTempoText, binding.compactTransportTempoText),
                 binding.compactMetricsContainer, minimum = compactMetricMinimum, naturalMidiWidth = true)
         }

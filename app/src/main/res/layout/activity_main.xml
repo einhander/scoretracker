@@ -55,11 +55,6 @@
             android:paddingHorizontal="8dp" android:textSize="14sp" android:textColor="@color/muted" android:maxLines="1"
              android:ellipsize="end" android:text="@string/no_midi" android:visibility="gone" />
         </LinearLayout>
-        <LinearLayout android:id="@+id/compactTestControls" android:layout_width="wrap_content" android:layout_height="48dp" android:gravity="center_vertical" android:visibility="gone">
-            <ImageButton android:id="@+id/compactTestPlayPauseButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_play" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_play" />
-            <ImageButton android:id="@+id/compactTestRestartButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_restart_audio" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_restart_description" />
-            <Button android:id="@+id/compactTestModeButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="wrap_content" android:layout_height="48dp" android:minWidth="64dp" android:paddingHorizontal="8dp" android:text="@string/test_mode_compact" />
-        </LinearLayout>
         </LinearLayout>
         <LinearLayout android:id="@+id/compactMetricsContainer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
         <LinearLayout android:id="@+id/compactTempos" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
@@ -72,6 +67,11 @@
             <TextView android:id="@+id/compactLiveTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/accent" android:text="@string/live_unavailable" />
             <TextView android:id="@+id/compactTransportTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/transport_unavailable" />
         </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:id="@+id/compactTestControls" android:layout_width="wrap_content" android:layout_height="48dp" android:layout_gravity="end|center_vertical" android:gravity="center_vertical" android:visibility="gone">
+            <ImageButton android:id="@+id/compactTestPlayPauseButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_play" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_play" />
+            <ImageButton android:id="@+id/compactTestRestartButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_restart_audio" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_restart_description" />
+            <Button android:id="@+id/compactTestModeButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="wrap_content" android:layout_height="48dp" android:minWidth="64dp" android:paddingHorizontal="8dp" android:text="@string/test_mode_compact" />
         </LinearLayout>
         </LinearLayout>
         <ImageButton android:id="@+id/expandPanelButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="top"
