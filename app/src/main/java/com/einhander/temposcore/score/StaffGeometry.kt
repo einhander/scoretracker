@@ -18,6 +18,31 @@ data class StaffExtent(val top: Float = 2f, val bottom: Float = 2f) {
     )
 }
 
+/** Rendering sizes only; onset/end beats and horizontal viewport scale remain unchanged. */
+data class StaffNoteGeometry(val scale: Float) {
+    val headXUnits: Float get() = 0.52f * scale
+    val headYUnits: Float get() = 0.33f * scale
+    val stemWidthUnits: Float get() = 0.055f * scale
+    fun ribbonHalfThicknessUnits(lane: Int): Float = (if (lane == 0) 0.13f else 0.065f) * scale
+    // Ribbon stems retain their 1.7-gap height; larger heads/outlines and signs need bottom space.
+    val ribbonAboveHeadUnits: Float get() = 2.25f
+    fun ribbonBelowHeadUnits(accidental: Boolean): Float =
+        if (accidental) 0.95f * scale else maxOf(0.55f, headYUnits + 0.28f)
+}
+
+private val symbolNoteGeometry = StaffNoteGeometry(1f)
+private val ribbonNoteGeometry = StaffNoteGeometry(1.3f)
+
+fun staffNoteGeometry(display: DurationDisplay): StaffNoteGeometry =
+    if (display == DurationDisplay.Ribbons) ribbonNoteGeometry else symbolNoteGeometry
+
+/** Font-sized rows reserve space before drawing; dense/short views use the existing overflow path. */
+fun staffLabelRows(height: Float, rowHeight: Float, density: Float): Int = when {
+    height >= 220f * density && rowHeight * 3f < height * 0.3f -> 3
+    rowHeight * 2f <= height * 0.4f -> 2
+    else -> 1
+}
+
 data class BeatViewport(
     val quarterBeatPosition: Double,
     val cursorX: Float,

@@ -17,6 +17,8 @@ import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.BeatViewport
 import com.einhander.temposcore.score.StaffExtent
+import com.einhander.temposcore.score.staffNoteGeometry
+import com.einhander.temposcore.score.staffLabelRows
 import com.einhander.temposcore.score.DurationDisplay
 import com.einhander.temposcore.score.DurationGlyph
 import com.einhander.temposcore.score.durationGlyph
@@ -68,9 +70,11 @@ class ScoreStaffView @JvmOverloads constructor(
     }
     private val namePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
         color = color(R.color.ink)
-        textSize = 12f * scaledDensity
+        textSize = 15f * scaledDensity
         typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
     }
+    // Keep conventional accidental dimensions independent of the larger pitch-label font.
+    private val accidentalMetricsPaint = TextPaint(namePaint).apply { textSize = 12f * scaledDensity }
     private val markerPaint = paint(R.color.muted).apply { strokeWidth = dp(0.8f) }
     private val markerHaloPaint = paint(R.color.white).apply { strokeWidth = dp(2.4f) }
     private val pastMarkerColor = color(R.color.muted)
@@ -169,6 +173,7 @@ class ScoreStaffView @JvmOverloads constructor(
     private var staffCenter = 0f
     private var lineGap = 0f
     private var staffExtent = StaffExtent()
+    private var noteGeometry = staffNoteGeometry(DurationDisplay.Symbols)
     private var headX = 0f
     private var headY = 0f
     private var staffTop = 0f
@@ -232,6 +237,7 @@ class ScoreStaffView @JvmOverloads constructor(
 
     /** All full-score work happens on model/selection changes, never in onDraw. */
     private fun rebuildNotes() {
+        noteGeometry = staffNoteGeometry(durationDisplay)
         val localScore = score
         val selected = localScore?.visibleNotes(trackSelection) ?: emptyList()
         val spellings = localScore?.let { NoteSpellingCache(it, selected, accidentalPreference) }
@@ -249,7 +255,7 @@ class ScoreStaffView @JvmOverloads constructor(
             for (pitch in group.uniquePitches) {
                 val step = spellings!!.spelling(pitch, group.startTick).staffStepFromB4
                 shifts[pitch] = candidates.firstOrNull { candidate -> shifts.all { (previousPitch, shift) ->
-                    val dy = (step - spellings.spelling(previousPitch, group.startTick).staffStepFromB4) / 1.32f
+                    val dy = (step - spellings.spelling(previousPitch, group.startTick).staffStepFromB4) / (4f * noteGeometry.headYUnits)
                     val dx = (candidate - shift) / 2f
                     dx * dx + dy * dy >= 1.02f
                 } } ?: candidates.last()
@@ -276,7 +282,8 @@ class ScoreStaffView @JvmOverloads constructor(
             if (durationDisplay == DurationDisplay.Symbols) {
                 extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane),
                     note.glyph.aboveHeadUnits(note.step), note.glyph.belowHeadUnits(note.step))
-            } else extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane))
+            } else extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane),
+                noteGeometry.ribbonAboveHeadUnits, noteGeometry.ribbonBelowHeadUnits(note.spelling.accidental != 0))
         }
         noteTreeEnd = DoubleArray(notes.size)
         groupEnds = DoubleArray(groups.size) { index ->
@@ -316,9 +323,11 @@ class ScoreStaffView @JvmOverloads constructor(
     /** Label rows are reserved outside note/stem geometry; packing stays stable while scrolling. */
     private fun rebuildLabels() {
         val metrics = namePaint.fontMetrics
-        accidentalFontHeight = minOf(16f * scaledDensity, (metrics.descent - metrics.ascent) * 1.1f)
+        val accidentalMetrics = accidentalMetricsPaint.fontMetrics
+        accidentalFontHeight = minOf(16f * scaledDensity,
+            (accidentalMetrics.descent - accidentalMetrics.ascent) * 1.1f) * noteGeometry.scale
         rowHeight = metrics.descent - metrics.ascent + dp(3f)
-        labelRows = if (height >= dp(220f) && rowHeight * 3f < height * 0.3f) 3 else 2
+        labelRows = staffLabelRows(height.toFloat(), rowHeight, density)
         val rowEnds = DoubleArray(labelRows) { Double.NEGATIVE_INFINITY }
         val maxWidth = minOf(dp(190f), width * 0.64f).coerceAtLeast(dp(28f))
         val scale = pixelsPerQuarterBeat()
@@ -505,13 +514,17 @@ class ScoreStaffView @JvmOverloads constructor(
         val h = height.toFloat()
         val captionMetrics = textPaint.fontMetrics
         val captionHeight = captionMetrics.descent - captionMetrics.ascent + dp(3f)
-        captionBottom = minOf(captionHeight, h * 0.12f)
-        barBandBottom = minOf(captionBottom + captionHeight, h * 0.25f)
+        val nameMetrics = namePaint.fontMetrics
+        captionBottom = maxOf(captionHeight, nameMetrics.descent - nameMetrics.ascent)
+        barBandBottom = captionBottom + captionHeight
         labelBandTop = maxOf(barBandBottom + dp(12f), h - rowHeight * labelRows - dp(4f))
-        val available = (labelBandTop - barBandBottom - dp(6f)).coerceAtLeast(1f)
+        // Reserve fixed-pixel halo/marker padding even when a wide pitch range makes lineGap tiny.
+        val edgePadding = if (durationDisplay == DurationDisplay.Ribbons) dp(2f) else 0f
+        val noteBandTop = barBandBottom + edgePadding
+        val available = (labelBandTop - noteBandTop - dp(6f) - edgePadding).coerceAtLeast(1f)
         lineGap = minOf(h * 0.105f, available / (staffExtent.top + staffExtent.bottom))
-        staffCenter = barBandBottom + (available - (staffExtent.top + staffExtent.bottom) * lineGap) / 2f + staffExtent.top * lineGap
-        headX = lineGap * 0.52f; headY = lineGap * 0.33f
+        staffCenter = noteBandTop + (available - (staffExtent.top + staffExtent.bottom) * lineGap) / 2f + staffExtent.top * lineGap
+        headX = lineGap * noteGeometry.headXUnits; headY = lineGap * noteGeometry.headYUnits
         staffTop = staffCenter - lineGap * 2f; staffBottom = staffCenter + lineGap * 2f
     }
 
@@ -520,7 +533,8 @@ class ScoreStaffView @JvmOverloads constructor(
         val w = width.toFloat(); val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
         val viewport = viewport()
-        val glyphMargin = if (durationDisplay == DurationDisplay.Symbols) lineGap * 3.2f else 0f
+        val glyphMargin = if (durationDisplay == DurationDisplay.Symbols) lineGap * 3.2f
+            else lineGap * noteGeometry.scale + dp(3f)
         val overscan = max(dp(16f), headX * (maxHeadShift + 1f) + glyphMargin) / viewport.pixelsPerQuarterBeat.toDouble()
         val range = viewport.visibleBeatRange(overscan)
         selectVisible(range.start, range.endInclusive)
@@ -537,7 +551,7 @@ class ScoreStaffView @JvmOverloads constructor(
             val end = viewport.beatToX(interval.endBeat)
             if (end <= start || end < 0f || start > w) continue
             val y = noteY(note)
-            val halfThickness = lineGap * (if (note.lane == 0) 0.13f else 0.065f)
+            val halfThickness = lineGap * noteGeometry.ribbonHalfThicknessUnits(note.lane)
             val stage = interval.stateAt(quarterBeatPosition)
             val ribbonPaint = when (stage) {
                 NoteTimeState.Future -> futureRibbonPaint
@@ -563,7 +577,7 @@ class ScoreStaffView @JvmOverloads constructor(
                     canvas.drawLine(x, staffTop, x, staffBottom, barPaint)
             }
         }
-        val stemWidth = max(dp(0.8f), lineGap * 0.055f)
+        val stemWidth = max(dp(0.8f), lineGap * noteGeometry.stemWidthUnits)
         val stemX = headX * 0.9f
         for (v in 0 until visibleCount) {
             val note = notes[visibleNotes[v]]
@@ -656,12 +670,12 @@ class ScoreStaffView @JvmOverloads constructor(
             viewport.pixelsPerQuarterBeat == accidentalCacheScale) return
         accidentalCacheHash = hash; accidentalCacheGap = lineGap
         accidentalCacheScale = viewport.pixelsPerQuarterBeat
-        accidentalHeight = minOf(accidentalFontHeight, lineGap * 1.25f)
+        accidentalHeight = minOf(accidentalFontHeight, lineGap * 1.25f * noteGeometry.scale)
         accidentalWidth = accidentalHeight * 0.45f
         accidentalPadding = max(dp(0.8f), accidentalHeight * 0.08f)
         accidentalCount = 0
         val gap = dp(1.5f)
-        val stemHalf = max(dp(0.8f), lineGap * 0.055f) / 2f
+        val stemHalf = max(dp(0.8f), lineGap * noteGeometry.stemWidthUnits) / 2f
         for (v in 0 until visibleCount) {
             val index = visibleNotes[v]
             val note = notes[index]
@@ -693,7 +707,7 @@ class ScoreStaffView @JvmOverloads constructor(
                         val otherOnset = viewport.beatToX(other.interval.startBeat)
                         val end = viewport.beatToX(other.interval.endBeat)
                         if (durationDisplay == DurationDisplay.Ribbons && other.interval.endBeat > other.interval.startBeat && end > otherOnset + headX) {
-                            val markerHalf = lineGap * (if (other.lane == 0) 0.13f else 0.065f) + dp(1f)
+                            val markerHalf = lineGap * noteGeometry.ribbonHalfThicknessUnits(other.lane) + dp(1f)
                             if (overlaps(left, top, right, bottom, end - markerHaloPaint.strokeWidth / 2f,
                                     otherY - markerHalf, end + markerHaloPaint.strokeWidth / 2f, otherY + markerHalf))
                                 target = minOf(target, end - markerHaloPaint.strokeWidth / 2f - gap - accidentalWidth - accidentalPadding)
@@ -796,7 +810,7 @@ class ScoreStaffView @JvmOverloads constructor(
                 // Off-screen real ends stay off-screen; clipping never relocates them.
                 if (end <= ribbonStart || end < viewport.leftX || end > viewport.rightX) continue
                 val y = noteY(note)
-                val halfThickness = lineGap * (if (note.lane == 0) 0.13f else 0.065f)
+                val halfThickness = lineGap * noteGeometry.ribbonHalfThicknessUnits(note.lane)
                 val paint = if (pass == 0) markerHaloPaint else markerPaint.apply {
                     color = when (interval.stateAt(quarterBeatPosition)) {
                         NoteTimeState.Active -> activePaint.color

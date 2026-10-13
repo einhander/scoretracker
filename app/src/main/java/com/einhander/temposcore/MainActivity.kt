@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.view.Choreographer
+import android.view.Menu
 import android.view.View
 import android.view.WindowManager
 import android.widget.AdapterView
@@ -43,10 +44,31 @@ import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
 import java.lang.ref.WeakReference
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 
-/** Visual height only: the separate overlay keeps a full-size expand target. */
-internal fun collapsedPanelHeight(expandedHeight: Int): Int = (expandedHeight * 0.1f).roundToInt().coerceAtLeast(1)
+/** Compact controls retain full-size touch targets without overlaying the score. */
+internal fun collapsedPanelHeight(expandedHeight: Int, density: Float): Int {
+    require(density.isFinite() && density > 0f)
+    if (expandedHeight <= 0) return 0
+    val minimum = ceil(48f * density).toInt().coerceAtLeast(1)
+    return maxOf((expandedHeight * 0.1f).roundToInt(), minimum).coerceAtMost(expandedHeight)
+}
+
+internal data class TransportControlState(val listenEnabled: Boolean, val resetEnabled: Boolean, val stopping: Boolean)
+
+internal fun transportControlState(scoreLoaded: Boolean, initialized: Boolean, running: Boolean,
+    testActive: Boolean, busy: Boolean): TransportControlState {
+    val ready = scoreLoaded && initialized
+    return TransportControlState(ready && !testActive && !busy, ready, ready && running && !testActive)
+}
+
+/** Exclusive MenuItem.setChecked(false) also selects that item: only check the chosen radio item. */
+internal fun applySettingsMenuChecks(selectedRadioItemIds: List<Int>, toggleChecks: Map<Int, Boolean>,
+    setChecked: (Int, Boolean) -> Unit) {
+    for (id in selectedRadioItemIds) setChecked(id, true)
+    for ((id, checked) in toggleChecks) setChecked(id, checked)
+}
 
 class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener, MidiBrowserDialog.Host {
     private lateinit var binding: ActivityMainBinding
@@ -77,6 +99,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var lastDiagnosticSampleNs = 0L
     private var midiLoadGeneration = 0
     private var testAudioLoadGeneration = 0
+    private var listeningStartPending = false
+    private var micPermissionPending = false
 
     private val openMidi = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) loadMidi(uri)
@@ -97,11 +121,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private val requestMic = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        micPermissionPending = false
         if (granted) startListening() else Toast.makeText(
             this,
             getString(R.string.permission_required),
             Toast.LENGTH_LONG,
         ).show()
+        updateTransportControls()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -126,10 +152,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.scoreView.pitchColors = pitchColors
         upperPanelExpanded = prefs.getBoolean(KEY_UPPER_PANEL_EXPANDED, true)
         binding.collapsePanelButton.setOnClickListener { setUpperPanelExpanded(false) }
-        binding.expandPanelHitArea.setOnClickListener { setUpperPanelExpanded(true) }
-        binding.topPanelContainer.setOnClickListener {
-            if (!upperPanelExpanded) setUpperPanelExpanded(true)
-        }
+        binding.expandPanelButton.setOnClickListener { setUpperPanelExpanded(true) }
         binding.mainRoot.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
             if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyUpperPanelLayout()
         }
@@ -177,18 +200,12 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             openFileBrowser(BrowserMode.MIDI)
         }
 
-        binding.listenButton.setOnClickListener {
-            val running = if (nativeInitialized) NativeAudioBridge.state().running else false
-            if (running) stopListening() else ensureMicAndStart()
-        }
-
-        binding.resetButton.setOnClickListener {
-            if (!nativeInitialized) return@setOnClickListener
-            NativeAudioBridge.resetPosition(0.0)
-            // Reset means a fresh acquisition (spec §30): the analyzer thread
-            // applies the request on its next update — no cross-thread state write.
-            NativeAudioBridge.requestGlobalReacquire()
-        }
+        val listenClick = View.OnClickListener { toggleListening() }
+        binding.listenButton.setOnClickListener(listenClick)
+        binding.compactListenButton.setOnClickListener(listenClick)
+        val resetClick = View.OnClickListener { resetScorePosition() }
+        binding.resetButton.setOnClickListener(resetClick)
+        binding.compactResetButton.setOnClickListener(resetClick)
 
         binding.loadTestAudioButton.setOnClickListener {
             openFileBrowser(BrowserMode.MP3)
@@ -238,18 +255,19 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 updateUiFromTransport()
             }
         }
+        updateTransportControls()
     }
 
     private fun treePreference(mode: BrowserMode) = if (mode == BrowserMode.MIDI) KEY_MIDI_TREE else KEY_MP3_TREE
 
     private fun setUpperPanelExpanded(expanded: Boolean) {
-        val previous = if (expanded) binding.expandPanelHitArea else binding.collapsePanelButton
+        val previous = if (expanded) binding.expandPanelButton else binding.collapsePanelButton
         val transferInputFocus = previous.hasFocus()
         val transferAccessibilityFocus = previous.isAccessibilityFocused
         upperPanelExpanded = expanded
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(KEY_UPPER_PANEL_EXPANDED, expanded).apply()
         applyUpperPanelLayout()
-        val target = if (expanded) binding.collapsePanelButton else binding.expandPanelHitArea
+        val target = if (expanded) binding.collapsePanelButton else binding.expandPanelButton
         if (transferInputFocus) target.requestFocus()
         if (transferAccessibilityFocus) target.post {
             if (target.visibility == View.VISIBLE) {
@@ -267,18 +285,14 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }
         val expandedHeight = binding.topPanel.measuredHeight.takeIf { it > 0 }
             ?: (124f * resources.displayMetrics.density).toInt()
-        val slimHeight = collapsedPanelHeight(expandedHeight)
+        val slimHeight = collapsedPanelHeight(expandedHeight, resources.displayMetrics.density)
         val targetHeight = if (upperPanelExpanded) android.view.ViewGroup.LayoutParams.WRAP_CONTENT else slimHeight
         if (binding.topPanelContainer.layoutParams.height != targetHeight) {
             binding.topPanelContainer.layoutParams = binding.topPanelContainer.layoutParams.apply { height = targetHeight }
         }
         binding.topPanel.visibility = if (upperPanelExpanded) View.VISIBLE else View.GONE
-        binding.topPanelContainer.isClickable = !upperPanelExpanded
         binding.topPanelContainer.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        binding.topPanelStrip.visibility = if (upperPanelExpanded) View.GONE else View.VISIBLE
-        binding.expandPanelHitArea.visibility = if (upperPanelExpanded) View.GONE else View.VISIBLE
-        binding.topPanelStrip.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-            minOf(10f * resources.displayMetrics.scaledDensity, slimHeight * 0.8f))
+        binding.compactPanel.visibility = if (upperPanelExpanded) View.GONE else View.VISIBLE
     }
 
     private fun openFileBrowser(mode: BrowserMode) {
@@ -420,8 +434,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.scoreView.score = parsed
         binding.fileNameText.text = name
         binding.fileNameText.contentDescription = name
-        binding.listenButton.isEnabled = true
-        binding.resetButton.isEnabled = true
         configureNativeEngine()
         sendScoreReferenceToNative(parsed)
         onTestAudioStateChanged(testAudioPlayer.state)
@@ -523,22 +535,26 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startListening()
         } else {
+            micPermissionPending = true
+            updateTransportControls()
             requestMic.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
     private fun startListening() {
-        if (!nativeInitialized) return
+        if (!nativeInitialized || listeningStartPending) return
         if (testAudioPlayer.state == TestAudioPlayer.State.Playing ||
             testAudioPlayer.state == TestAudioPlayer.State.Paused) {
             testAudioPlayer.stop()
         }
-        binding.listenButton.isEnabled = false
+        listeningStartPending = true
+        updateTransportControls()
         Thread {
             val ok = NativeAudioBridge.start()
             runOnUiThread {
-                binding.listenButton.isEnabled = true
-                binding.listenButton.text = if (ok) getString(R.string.stop_listening) else getString(R.string.start_listening)
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                listeningStartPending = false
+                updateTransportControls()
                 if (!ok) Toast.makeText(this, R.string.mic_error, Toast.LENGTH_LONG).show()
             }
         }.start()
@@ -546,12 +562,45 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun stopListening() {
         NativeAudioBridge.stop()
-        binding.listenButton.text = getString(R.string.start_listening)
+        updateTransportControls()
+    }
+
+    private fun toggleListening() {
+        if (!binding.listenButton.isEnabled) return
+        val running = if (nativeInitialized) NativeAudioBridge.state().running else false
+        if (running) stopListening() else ensureMicAndStart()
+    }
+
+    private fun resetScorePosition() {
+        if (!binding.resetButton.isEnabled) return
+        NativeAudioBridge.resetPosition(0.0)
+        // Reset requests fresh score acquisition, not an MP3 restart.
+        NativeAudioBridge.requestGlobalReacquire()
+    }
+
+    private fun updateTransportControls(running: Boolean = if (nativeInitialized) NativeAudioBridge.state().running else false) {
+        val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing || testAudioPlayer.state == TestAudioPlayer.State.Paused
+        val controls = transportControlState(score != null, nativeInitialized, running, testActive,
+            listeningStartPending || micPermissionPending)
+        val label = getString(if (controls.stopping) R.string.stop_listening else R.string.start_listening)
+        if (binding.listenButton.text.toString() != label) binding.listenButton.text = label
+        if (binding.compactListenButton.text.toString() != label) binding.compactListenButton.text = label
+        binding.listenButton.isEnabled = controls.listenEnabled
+        binding.compactListenButton.isEnabled = controls.listenEnabled
+        binding.resetButton.isEnabled = controls.resetEnabled
+        binding.compactResetButton.isEnabled = controls.resetEnabled
+        val hasTracks = binding.trackSelectorRow.visibility == View.VISIBLE
+        val summary = if (hasTracks) binding.trackSpinner.selectedItem?.toString() ?: binding.fileNameText.text.toString()
+            else binding.fileNameText.text.toString()
+        if (binding.compactTrackText.text.toString() != summary) binding.compactTrackText.text = summary
+        binding.compactTrackText.contentDescription = if (hasTracks) binding.trackSpinner.contentDescription else binding.fileNameText.contentDescription
     }
 
     private fun updateUiFromTransport() {
+        val state = if (nativeInitialized) NativeAudioBridge.state() else null
+        updateTransportControls(state?.running ?: false)
         val localScore = score ?: return
-        val state = if (nativeInitialized) NativeAudioBridge.state() else return
+        if (state == null) return
         val testPlaying = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
             testAudioPlayer.state == TestAudioPlayer.State.Paused
         val authoritativePos = state.quarterBeatPosition.coerceAtLeast(0.0)
@@ -608,14 +657,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             getString(R.string.position_locked) + ". " +
                 getString(R.string.position_confidence_description, state.positionConfidence * 100.0)
         } else formatPositionStatus(state)
-        val testActive = testAudioPlayer.state == TestAudioPlayer.State.Playing ||
-            testAudioPlayer.state == TestAudioPlayer.State.Paused
-        binding.listenButton.isEnabled = !testActive
-        binding.listenButton.text = if (state.running && !testActive) {
-            getString(R.string.stop_listening)
-        } else {
-            getString(R.string.start_listening)
-        }
     }
 
     private fun smoothTestPresentation(authoritativePos: Double, state: TransportSnapshot): Double {
@@ -650,33 +691,25 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun showSettingsMenu() {
         val popup = PopupMenu(this, binding.settingsButton)
-        val letters = popup.menu.add(1, MENU_NOTATION_LETTERS, 0, getString(R.string.notation_letters))
-        val solfege = popup.menu.add(1, MENU_NOTATION_SOLFEGE, 1, getString(R.string.notation_solfege))
+        popup.menu.add(1, MENU_NOTATION_LETTERS, 0, getString(R.string.notation_letters))
+        popup.menu.add(1, MENU_NOTATION_SOLFEGE, 1, getString(R.string.notation_solfege))
         popup.menu.setGroupCheckable(1, true, true)
-        letters.isChecked = noteNaming == NoteNaming.Letters
-        solfege.isChecked = noteNaming == NoteNaming.Solfege
         popup.menu.add(2, MENU_SHOW_TEST_MODE, 2, getString(R.string.show_test_mode)).apply {
             isCheckable = true
-            isChecked = showTestMode
         }
         popup.menu.add(4, MENU_ACCIDENTAL_HINT, 3, getString(R.string.accidental_midi_priority)).isEnabled = false
-        val sharps = popup.menu.add(3, MENU_ACCIDENTAL_SHARPS, 4, getString(R.string.accidental_sharps))
-        val flats = popup.menu.add(3, MENU_ACCIDENTAL_FLATS, 5, getString(R.string.accidental_flats))
+        popup.menu.add(3, MENU_ACCIDENTAL_SHARPS, 4, getString(R.string.accidental_sharps))
+        popup.menu.add(3, MENU_ACCIDENTAL_FLATS, 5, getString(R.string.accidental_flats))
         popup.menu.setGroupCheckable(3, true, true)
-        sharps.isChecked = accidentalPreference == AccidentalPreference.Sharps
-        flats.isChecked = accidentalPreference == AccidentalPreference.Flats
-        val symbols = popup.menu.add(5, MENU_DURATION_SYMBOLS, 6, getString(R.string.duration_symbols))
-        val ribbons = popup.menu.add(5, MENU_DURATION_RIBBONS, 7, getString(R.string.duration_ribbons))
+        popup.menu.add(5, MENU_DURATION_SYMBOLS, 6, getString(R.string.duration_symbols))
+        popup.menu.add(5, MENU_DURATION_RIBBONS, 7, getString(R.string.duration_ribbons))
         popup.menu.setGroupCheckable(5, true, true)
-        symbols.isChecked = durationDisplay == DurationDisplay.Symbols
-        ribbons.isChecked = durationDisplay == DurationDisplay.Ribbons
         popup.menu.add(6, MENU_PITCH_COLORS, 8, getString(R.string.pitch_colors)).apply {
             isCheckable = true
-            isChecked = pitchColors
         }
-        popup.menu.add(7, MENU_DURATION_HINT, 9, getString(R.string.duration_symbols_hint)).isEnabled = false
+        syncSettingsMenuChecks(popup.menu)
         popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
+            val handled = when (item.itemId) {
                 MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
                 MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
                 MENU_ACCIDENTAL_SHARPS -> { setAccidentalPreference(AccidentalPreference.Sharps); true }
@@ -695,8 +728,21 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 }
                 else -> false
             }
+            // Synchronize immediately, before the normal PopupMenu dismissal, not only on next open.
+            if (handled) syncSettingsMenuChecks(popup.menu)
+            handled
         }
         popup.show()
+    }
+
+    private fun syncSettingsMenuChecks(menu: Menu) {
+        applySettingsMenuChecks(listOf(
+            if (noteNaming == NoteNaming.Letters) MENU_NOTATION_LETTERS else MENU_NOTATION_SOLFEGE,
+            if (accidentalPreference == AccidentalPreference.Sharps) MENU_ACCIDENTAL_SHARPS else MENU_ACCIDENTAL_FLATS,
+            if (durationDisplay == DurationDisplay.Symbols) MENU_DURATION_SYMBOLS else MENU_DURATION_RIBBONS,
+        ), mapOf(MENU_PITCH_COLORS to pitchColors, MENU_SHOW_TEST_MODE to showTestMode)) { id, checked ->
+            menu.findItem(id).isChecked = checked
+        }
     }
 
     /** Full, scrollable fallback for chord labels: never ellipsize or substitute live BPM. */
@@ -832,7 +878,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             TestAudioPlayer.State.Playing -> getString(R.string.test_pause)
             else -> getString(R.string.test_play)
         }
-        binding.listenButton.isEnabled = !active && score != null
+        updateTransportControls()
         if (state == TestAudioPlayer.State.Empty) {
             binding.testAudioNameText.text = getString(R.string.no_test_audio)
         }
@@ -883,7 +929,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val MENU_DURATION_SYMBOLS = 7
         private const val MENU_DURATION_RIBBONS = 8
         private const val MENU_PITCH_COLORS = 9
-        private const val MENU_DURATION_HINT = 10
     }
 
 }
