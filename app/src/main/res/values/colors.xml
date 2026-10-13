@@ -6,6 +6,8 @@
     <color name="ink">#202C29</color>
     <color name="muted">#52615B</color>
     <color name="accent">#006B57</color>
+    <color name="tempo_adjustment_positive">#006B57</color>
+    <color name="tempo_adjustment_negative">#A32945</color>
     <color name="cursor">#A32945</color>
     <color name="warning">#8A4B08</color>
     <color name="staff_line">#80918A</color>

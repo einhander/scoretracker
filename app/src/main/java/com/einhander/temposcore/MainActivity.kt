@@ -301,6 +301,34 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun applyUpperPanelLayout() {
         val width = binding.topPanelContainer.width
+        val density = resources.displayMetrics.density
+        val metricMinimum = 96f + 380f * resources.configuration.fontScale
+        fun configureMetrics(row: android.widget.LinearLayout, metrics: android.widget.LinearLayout,
+            availableWidth: Float, controlsWidth: Float, children: List<View>,
+            container: android.widget.LinearLayout = metrics) {
+            val stacked = availableWidth < controlsWidth + metricMinimum
+            row.orientation = if (stacked) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
+            container.layoutParams = (container.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
+                this.width = if (stacked) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
+                weight = if (stacked) 0f else 1f
+            }
+            val vertical = (if (stacked) availableWidth else availableWidth - controlsWidth) < metricMinimum
+            metrics.orientation = if (vertical) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
+            children.forEachIndexed { index, child ->
+                child.layoutParams = (child.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
+                    this.width = if (vertical) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
+                    weight = if (vertical) 0f else if (index == 0) 2.5f else 1f
+                }
+            }
+        }
+        if (width > 0) {
+            configureMetrics(binding.fullTempoRow, binding.fullTempos, width / density, 300f,
+                listOf(binding.midiTempoGroup, binding.liveTempoText, binding.transportTempoText))
+            // Outer panel never stacks: its final 48dp child stays pinned at the right edge.
+            configureMetrics(binding.compactContent, binding.compactTempos, width / density - 56f, 220f,
+                listOf(binding.compactMidiTempoGroup, binding.compactLiveTempoText, binding.compactTransportTempoText),
+                binding.compactMetricsContainer)
+        }
         if (width > 0) {
             // Measure natural expanded content even when hidden; never infer it from the collapsed wrapper.
             binding.topPanel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
@@ -309,22 +337,6 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val expandedHeight = binding.topPanel.measuredHeight.takeIf { it > 0 }
             ?: (124f * resources.displayMetrics.density).toInt()
         val slimHeight = collapsedPanelHeight(expandedHeight, resources.displayMetrics.density)
-        // Keep all three metrics readable: stack below controls when width or font scale needs it.
-        val density = resources.displayMetrics.density
-        val stacked = width > 0 && width / density < 276f + 330f * resources.configuration.fontScale
-        binding.compactPanel.orientation = if (stacked) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
-        binding.compactMetricsContainer.layoutParams = (binding.compactMetricsContainer.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
-            this.width = if (stacked) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
-            weight = if (stacked) 0f else 1f
-        }
-        val verticalTempos = stacked && width / density < 330f * resources.configuration.fontScale
-        binding.compactTempos.orientation = if (verticalTempos) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
-        listOf(binding.compactTempoText, binding.compactLiveTempoText, binding.compactTransportTempoText).forEach { metric ->
-            metric.layoutParams = (metric.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
-                this.width = if (verticalTempos) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
-                weight = if (verticalTempos) 0f else 1f
-            }
-        }
         if (width > 0) {
             binding.compactPanel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
@@ -636,15 +648,30 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun updateTempoAdjustmentControls(testActive: Boolean) {
         val controls = tempoAdjustmentControls(tempoAdjustmentBpm, testActive)
-        val label = getString(if (testActive) R.string.tempo_adjustment_mp3 else R.string.tempo_adjustment, controls.signed)
+        val label = controls.signed
+        val explanation = getString(if (testActive) R.string.tempo_adjustment_mp3 else R.string.tempo_adjustment, controls.signed)
         val labelChanged = binding.tempoAdjustmentText.text.toString() != label
         binding.tempoAdjustmentText.text = label
         binding.compactTempoAdjustmentText.text = label
+        val color = ContextCompat.getColor(this, when {
+            testActive || controls.value == 0 -> R.color.muted
+            controls.value > 0 -> R.color.tempo_adjustment_positive
+            else -> R.color.tempo_adjustment_negative
+        })
+        listOf(binding.tempoAdjustmentText, binding.compactTempoAdjustmentText).forEach {
+            it.setTextColor(color)
+            it.contentDescription = explanation
+            it.tooltipText = explanation
+        }
+        listOf(binding.tempoDecreaseButton, binding.compactTempoDecreaseButton,
+            binding.tempoIncreaseButton, binding.compactTempoIncreaseButton).forEach {
+            it.tooltipText = if (testActive) explanation else null
+        }
         binding.tempoDecreaseButton.isEnabled = controls.decreaseEnabled
         binding.compactTempoDecreaseButton.isEnabled = binding.tempoDecreaseButton.isEnabled
         binding.tempoIncreaseButton.isEnabled = controls.increaseEnabled
         binding.compactTempoIncreaseButton.isEnabled = binding.tempoIncreaseButton.isEnabled
-        // MP3 explanation can need another line, especially with accessibility font sizes.
+        // Re-measure if the signed number changes width; descriptions never add visible rows.
         if (labelChanged) applyUpperPanelLayout()
     }
 

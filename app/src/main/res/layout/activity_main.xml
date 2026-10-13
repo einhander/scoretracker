@@ -16,18 +16,22 @@
         <ImageButton android:id="@+id/settingsButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_settings" android:tint="@color/ink" android:contentDescription="@string/settings" />
         <ImageButton android:id="@+id/collapsePanelButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/arrow_up_float" android:tint="@color/ink" android:contentDescription="@string/panel_collapse" android:tooltipText="@string/panel_collapse" />
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+    <LinearLayout android:id="@+id/fullTempoRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="48dp" android:gravity="center_vertical">
         <Button android:id="@+id/listenButton" android:layout_width="132dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1" android:ellipsize="end" android:textAllCaps="false" android:enabled="false" android:text="@string/start_listening" />
         <Button android:id="@+id/loadMidiButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="120dp" android:layout_height="48dp" android:text="@string/load_midi" />
         <ImageButton android:id="@+id/resetButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_reset" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/reset_position" />
-        <TextView android:id="@+id/tempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/midi_unavailable" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/fullTempos" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center_vertical">
+        <LinearLayout android:id="@+id/midiTempoGroup" android:layout_width="0dp" android:layout_weight="2.5" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center">
+            <Button android:id="@+id/tempoDecreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="−" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_decrease" />
+            <TextView android:id="@+id/tempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
+            <TextView android:id="@+id/tempoAdjustmentText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/muted" android:text="0" />
+            <Button android:id="@+id/tempoIncreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="+" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_increase" />
+        </LinearLayout>
         <TextView android:id="@+id/liveTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textStyle="bold" android:textColor="@color/accent" android:text="@string/live_unavailable" />
         <TextView android:id="@+id/transportTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/transport_unavailable" />
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
-        <Button android:id="@+id/tempoDecreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="−" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_decrease" />
-        <TextView android:id="@+id/tempoAdjustmentText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center" android:textSize="14sp" android:text="@string/tempo_adjustment_initial" />
-        <Button android:id="@+id/tempoIncreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="+" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_increase" />
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="28dp" android:gravity="center_vertical">
         <TextView android:id="@+id/positionText" style="@style/Widget.TempoScore.Status" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="@string/position_initial" />
@@ -37,7 +41,8 @@
     </LinearLayout>
     <LinearLayout android:id="@+id/compactPanel" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp"
         android:orientation="horizontal" android:background="@color/surface_alt" android:gravity="center_vertical"
-        android:paddingHorizontal="4dp" android:visibility="gone">
+         android:paddingHorizontal="4dp" android:visibility="gone">
+        <LinearLayout android:id="@+id/compactContent" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center_vertical">
         <LinearLayout android:id="@+id/compactControls" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center_vertical">
         <Button android:id="@+id/compactListenButton" android:layout_width="132dp" android:layout_height="48dp"
             android:minWidth="0dp" android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1"
@@ -48,22 +53,23 @@
         <TextView android:id="@+id/compactTrackText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
             android:paddingHorizontal="8dp" android:textSize="14sp" android:textColor="@color/muted" android:maxLines="1"
              android:ellipsize="end" android:text="@string/no_midi" android:visibility="gone" />
-        <ImageButton android:id="@+id/expandPanelButton" android:layout_width="48dp" android:layout_height="48dp"
-            android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/arrow_down_float"
-             android:tint="@color/accent" android:contentDescription="@string/panel_expand" android:tooltipText="@string/panel_expand" />
         </LinearLayout>
         <LinearLayout android:id="@+id/compactMetricsContainer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
         <LinearLayout android:id="@+id/compactTempos" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
-            <TextView android:id="@+id/compactTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
+            <LinearLayout android:id="@+id/compactMidiTempoGroup" android:layout_width="0dp" android:layout_weight="2.5" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center">
+                <Button android:id="@+id/compactTempoDecreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="−" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_decrease" />
+                <TextView android:id="@+id/compactTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
+                <TextView android:id="@+id/compactTempoAdjustmentText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/muted" android:text="0" />
+                <Button android:id="@+id/compactTempoIncreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="+" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_increase" />
+            </LinearLayout>
             <TextView android:id="@+id/compactLiveTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/accent" android:text="@string/live_unavailable" />
             <TextView android:id="@+id/compactTransportTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/transport_unavailable" />
         </LinearLayout>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
-            <Button android:id="@+id/compactTempoDecreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="−" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_decrease" />
-            <TextView android:id="@+id/compactTempoAdjustmentText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center" android:textSize="14sp" android:text="@string/tempo_adjustment_initial" />
-            <Button android:id="@+id/compactTempoIncreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="+" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_increase" />
         </LinearLayout>
         </LinearLayout>
+        <ImageButton android:id="@+id/expandPanelButton" android:layout_width="48dp" android:layout_height="48dp" android:layout_gravity="top"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/arrow_down_float"
+            android:tint="@color/accent" android:contentDescription="@string/panel_expand" android:tooltipText="@string/panel_expand" />
     </LinearLayout>
     </FrameLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal">

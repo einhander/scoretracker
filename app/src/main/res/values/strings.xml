@@ -72,7 +72,6 @@
     <string name="midi_tempo">MIDI\n%1$.1f BPM</string>
     <string name="live_tempo">LIVE\n%1$s BPM</string>
     <string name="transport_tempo">Транспорт\n%1$.1f BPM</string>
-    <string name="tempo_adjustment_initial">Поправка 0 BPM · для микрофона</string>
     <string name="tempo_adjustment">Поправка %1$s BPM · для микрофона</string>
     <string name="tempo_adjustment_mp3">Поправка %1$s BPM · для микрофона\nНе применяется к MP3</string>
     <string name="tempo_adjustment_decrease">Уменьшить поправку темпа на 1 BPM</string>
