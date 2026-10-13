@@ -50,6 +50,8 @@
     <string name="test_play">Пуск</string>
     <string name="test_pause">Пауза</string>
     <string name="test_restart">Сначала</string>
+    <string name="test_restart_description">Воспроизвести MP3 сначала</string>
+    <string name="test_mode_compact">MP3</string>
     <string name="test_stop">Стоп</string>
     <string name="test_exit">Выйти</string>
     <string name="test_inactive">MP3 · не активен</string>

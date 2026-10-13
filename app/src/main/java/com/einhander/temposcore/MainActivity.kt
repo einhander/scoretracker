@@ -192,6 +192,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             testPanelExpanded = !testPanelExpanded
             applyTestModeVisibility()
         }
+        binding.compactTestModeButton.setOnClickListener { binding.testModeButton.performClick() }
         binding.exitTestModeButton.setOnClickListener {
             testAudioPlayer.stop()
             setTestModeVisible(false)
@@ -246,6 +247,8 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             if (score == null) return@setOnClickListener
             testAudioPlayer.restart()
         }
+        binding.compactTestPlayPauseButton.setOnClickListener { binding.testPlayPauseButton.performClick() }
+        binding.compactTestRestartButton.setOnClickListener { binding.testRestartButton.performClick() }
         binding.testStopButton.setOnClickListener { testAudioPlayer.stop() }
         binding.testSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -324,7 +327,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             }
         }
         if (width > 0) {
-            // Expanded MIDI uses natural text width, not a weighted gap between − and +.
+            // MIDI uses natural text width, not a weighted gap between − and +.
             // Reserve three-digit BPM and the widest signed trim so ordinary tempo updates do not wrap the row.
             fun textWidth(view: android.widget.TextView, text: String): Float =
                 text.split('\n').maxOf { view.paint.measureText(it) } / density
@@ -338,9 +341,22 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 listOf(binding.midiTempoGroup, binding.liveTempoText, binding.transportTempoText),
                 minimum = fullMetricMinimum, naturalMidiWidth = true)
             // Outer panel never stacks: its final 48dp child stays pinned at the right edge.
-            configureMetrics(binding.compactContent, binding.compactTempos, width / density - 56f, 220f,
+            val compactWidth = width / density - 56f
+            val compactTestWidth = 96f + maxOf(64f,
+                textWidth(binding.compactTestModeButton, getString(R.string.test_mode_compact)) + 16f)
+            val compactControlsWidth = 180f + if (showTestMode) compactTestWidth else 0f
+            val compactMidiWidth = 100f + textWidth(binding.compactTempoText, getString(R.string.midi_tempo, 999.9)) +
+                maxOf(textWidth(binding.compactTempoAdjustmentText, "+30"), textWidth(binding.compactTempoAdjustmentText, "-30"))
+            val compactMetricMinimum = compactMidiWidth + 2f * maxOf(
+                textWidth(binding.compactLiveTempoText, getString(R.string.live_tempo, "999.9")),
+                textWidth(binding.compactTransportTempoText, getString(R.string.transport_tempo, 999.9))) + 16f
+            val wrapCompactControls = compactWidth < compactControlsWidth
+            binding.compactControls.orientation = if (wrapCompactControls) android.widget.LinearLayout.VERTICAL
+                else android.widget.LinearLayout.HORIZONTAL
+            configureMetrics(binding.compactContent, binding.compactTempos, compactWidth,
+                if (wrapCompactControls) 180f else compactControlsWidth,
                 listOf(binding.compactMidiTempoGroup, binding.compactLiveTempoText, binding.compactTransportTempoText),
-                binding.compactMetricsContainer)
+                binding.compactMetricsContainer, minimum = compactMetricMinimum, naturalMidiWidth = true)
         }
         if (width > 0) {
             // Measure natural expanded content even when hidden; never infer it from the collapsed wrapper.
@@ -700,6 +716,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.compactListenButton.isEnabled = controls.listenEnabled
         binding.resetButton.isEnabled = controls.resetEnabled
         binding.compactResetButton.isEnabled = controls.resetEnabled
+        binding.compactTestPlayPauseButton.isEnabled = binding.testPlayPauseButton.isEnabled
+        binding.compactTestRestartButton.isEnabled = binding.testRestartButton.isEnabled
+        binding.compactTestPlayPauseButton.setImageResource(
+            if (testAudioPlayer.state == TestAudioPlayer.State.Playing) R.drawable.ic_pause else R.drawable.ic_play)
+        binding.compactTestPlayPauseButton.contentDescription = binding.testPlayPauseButton.text
         val hasTracks = binding.trackSelectorRow.visibility == View.VISIBLE
         val summary = if (hasTracks) binding.trackSpinner.selectedItem?.toString() ?: binding.fileNameText.text.toString()
             else binding.fileNameText.text.toString()
@@ -940,6 +961,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.testModeButton.contentDescription = getString(
             if (testPanelExpanded) R.string.test_panel_close else R.string.test_panel_open)
         binding.testModeButton.isSelected = showTestMode
+        binding.compactTestControls.visibility = if (showTestMode) View.VISIBLE else View.GONE
+        binding.compactTestModeButton.contentDescription = binding.testModeButton.contentDescription
+        binding.compactTestModeButton.isSelected = testPanelExpanded
+        applyUpperPanelLayout()
     }
 
     private fun setTestModeVisible(visible: Boolean) {
@@ -972,6 +997,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                     activity.binding.testStopButton.isEnabled = false
                     activity.binding.testSeekBar.isEnabled = true
                     activity.binding.loadTestAudioButton.isEnabled = true
+                    activity.updateTransportControls()
                 }
             }
         }.start()

@@ -44,21 +44,28 @@
          android:paddingHorizontal="4dp" android:visibility="gone">
         <LinearLayout android:id="@+id/compactContent" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="center_vertical">
         <LinearLayout android:id="@+id/compactControls" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center_vertical">
+        <LinearLayout android:layout_width="wrap_content" android:layout_height="48dp" android:gravity="center_vertical">
         <Button android:id="@+id/compactListenButton" android:layout_width="132dp" android:layout_height="48dp"
             android:minWidth="0dp" android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1"
             android:ellipsize="end" android:textAllCaps="false" android:enabled="false" android:text="@string/start_listening" />
-        <Button android:id="@+id/compactResetButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="88dp"
-            android:layout_height="48dp" android:textSize="14sp" android:enabled="false"
-            android:text="@string/reset_position_compact" android:contentDescription="@string/reset_position" />
+        <ImageButton android:id="@+id/compactResetButton" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_reset"
+            android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/reset_position" />
         <TextView android:id="@+id/compactTrackText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
             android:paddingHorizontal="8dp" android:textSize="14sp" android:textColor="@color/muted" android:maxLines="1"
              android:ellipsize="end" android:text="@string/no_midi" android:visibility="gone" />
         </LinearLayout>
+        <LinearLayout android:id="@+id/compactTestControls" android:layout_width="wrap_content" android:layout_height="48dp" android:gravity="center_vertical" android:visibility="gone">
+            <ImageButton android:id="@+id/compactTestPlayPauseButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_play" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_play" />
+            <ImageButton android:id="@+id/compactTestRestartButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_restart_audio" android:tint="@color/control_icon" android:enabled="false" android:contentDescription="@string/test_restart_description" />
+            <Button android:id="@+id/compactTestModeButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="wrap_content" android:layout_height="48dp" android:minWidth="64dp" android:paddingHorizontal="8dp" android:text="@string/test_mode_compact" />
+        </LinearLayout>
+        </LinearLayout>
         <LinearLayout android:id="@+id/compactMetricsContainer" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:orientation="vertical">
         <LinearLayout android:id="@+id/compactTempos" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center_vertical">
-            <LinearLayout android:id="@+id/compactMidiTempoGroup" android:layout_width="0dp" android:layout_weight="2.5" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center">
+            <LinearLayout android:id="@+id/compactMidiTempoGroup" android:layout_width="wrap_content" android:layout_height="wrap_content" android:minHeight="48dp" android:gravity="center">
                 <Button android:id="@+id/compactTempoDecreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="−" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_decrease" />
-                <TextView android:id="@+id/compactTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
+                <TextView android:id="@+id/compactTempoText" style="@style/Widget.TempoScore.Metric" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textSize="14sp" android:text="@string/midi_unavailable" />
                 <TextView android:id="@+id/compactTempoAdjustmentText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:textSize="14sp" android:textStyle="bold" android:textColor="@color/muted" android:text="0" />
                 <Button android:id="@+id/compactTempoIncreaseButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="48dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="0dp" android:text="+" android:textSize="20sp" android:contentDescription="@string/tempo_adjustment_increase" />
             </LinearLayout>
