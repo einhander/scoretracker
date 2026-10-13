@@ -17,6 +17,10 @@ import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.BeatViewport
 import com.einhander.temposcore.score.StaffExtent
+import com.einhander.temposcore.score.DurationDisplay
+import com.einhander.temposcore.score.DurationGlyph
+import com.einhander.temposcore.score.durationGlyph
+import com.einhander.temposcore.score.pitchClassColor
 import com.einhander.temposcore.score.horizontalZoom
 import com.einhander.temposcore.score.AccidentalPreference
 import com.einhander.temposcore.score.MeasureBoundary
@@ -71,6 +75,17 @@ class ScoreStaffView @JvmOverloads constructor(
     private val markerHaloPaint = paint(R.color.white).apply { strokeWidth = dp(2.4f) }
     private val pastMarkerColor = color(R.color.muted)
     private val rect = RectF()
+    private val glyphPaint = paint(R.color.ink)
+    private val hollowBackgroundPaint = paint(R.color.white)
+    private val activeOutlinePaint = paint(R.color.active_note).apply { style = Paint.Style.STROKE }
+    private val approximationPaint = paint(R.color.ink)
+    private val flagPath = Path().apply {
+        moveTo(0f, 0f)
+        cubicTo(0.1f, 0.45f, 0.9f, 0.4f, 0.8f, 1f)
+        cubicTo(0.7f, 1.35f, 0.25f, 1.55f, 0.12f, 1.85f)
+        cubicTo(0.4f, 1.05f, 0.2f, 0.85f, 0f, 0.75f)
+        close()
+    }
     // Unit paths avoid missing Unicode/music glyphs on older Android fonts.
     private val sharpPath = Path().apply {
         moveTo(0.28f, -1f); lineTo(0.28f, 1f)
@@ -104,6 +119,7 @@ class ScoreStaffView @JvmOverloads constructor(
         val lane: Int,
         val headShift: Float,
         val spelling: NoteSpelling,
+        val glyph: DurationGlyph,
     )
 
     private data class GroupLabel(
@@ -184,6 +200,10 @@ class ScoreStaffView @JvmOverloads constructor(
         set(value) { if (field != value) { field = value; rebuildLabels(); accidentalCacheHash = Long.MIN_VALUE; invalidate() } }
     var accidentalPreference: AccidentalPreference = AccidentalPreference.Sharps
         set(value) { if (field != value) { field = value; rebuildNotes(); invalidate() } }
+    var durationDisplay: DurationDisplay = DurationDisplay.Symbols
+        set(value) { if (field != value) { field = value; rebuildNotes(); invalidate() } }
+    var pitchColors: Boolean = false
+        set(value) { if (field != value) { field = value; invalidate() } }
 
     var onPositionScrubStart: ((Double) -> Unit)? = null
     var onPositionScrubChanged: ((Double) -> Unit)? = null
@@ -248,11 +268,15 @@ class ScoreStaffView @JvmOverloads constructor(
                 val groupIndex = groupIndices.getValue(note.startTick)
                 val spelling = spellings!!.spelling(note.pitch, note.startTick)
                 DrawNote(note, interval, groupIndex, spelling.staffStepFromB4 + octaveShift * 7,
-                    lane, headShifts[groupIndex].getValue(note.pitch), spelling)
+                    lane, headShifts[groupIndex].getValue(note.pitch), spelling,
+                    durationGlyph(interval.endBeat - interval.startBeat))
             }
         maxHeadShift = notes.maxOfOrNull { abs(it.headShift) } ?: 0f
         staffExtent = notes.fold(StaffExtent()) { extent, note ->
-            extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane))
+            if (durationDisplay == DurationDisplay.Symbols) {
+                extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane),
+                    note.glyph.aboveHeadUnits(note.step), note.glyph.belowHeadUnits(note.step))
+            } else extent.including(note.step, note.spelling.accidental != 0, laneOffsetUnits(note.lane))
         }
         noteTreeEnd = DoubleArray(notes.size)
         groupEnds = DoubleArray(groups.size) { index ->
@@ -410,6 +434,73 @@ class ScoreStaffView @JvmOverloads constructor(
 
     private fun noteY(note: DrawNote): Float = staffCenter - note.step * lineGap / 2f + laneOffset(note.lane)
 
+    private fun noteInkColor(note: DrawNote): Int {
+        val stage = note.interval.stateAt(quarterBeatPosition)
+        return if (pitchColors) pitchClassColor(note.note.pitch, stage == NoteTimeState.Past) else when (stage) {
+            NoteTimeState.Future -> futurePaint.color
+            NoteTimeState.Active -> activePaint.color
+            NoteTimeState.Past -> pastPaint.color
+        }
+    }
+
+    private fun glyphLeft(note: DrawNote): Float = if (note.glyph.flags > 0 && note.step >= 0)
+        -headX * 0.9f - lineGap * 0.9f else -headX * (if (note.glyph.denominator == 1) 1.2f else 1f)
+
+    private fun glyphRight(note: DrawNote): Float {
+        var right = headX * (if (note.glyph.denominator == 1) 1.2f else 1f)
+        if (note.glyph.flags > 0 && note.step < 0) right = maxOf(right, headX * 0.9f + lineGap * 0.9f)
+        if (note.glyph.dots > 0) right = maxOf(right, headX * (1.6f + (note.glyph.dots - 1) * 0.65f) + lineGap * 0.12f)
+        if (note.glyph.approximate) right = maxOf(right, headX * (3.2f + note.glyph.dots * 0.65f) + lineGap * 0.5f)
+        return right
+    }
+
+    private fun drawDurationGlyph(canvas: Canvas, note: DrawNote, x: Float, y: Float, paint: Paint) {
+        val glyph = note.glyph
+        val radiusX = headX * (if (glyph.denominator == 1) 1.2f else 1f)
+        if (glyph.hasStem) {
+            val up = note.step < 0
+            val direction = if (up) -1f else 1f
+            val stemX = x - direction * headX * 0.9f
+            val stemEnd = y + direction * lineGap * glyph.stemLengthUnits
+            canvas.drawLine(stemX, y, stemX, stemEnd, paint)
+            repeat(glyph.flags) { index ->
+                canvas.save()
+                canvas.translate(stemX, stemEnd - direction * index * lineGap * 0.45f)
+                canvas.scale(-direction * lineGap, -direction * lineGap)
+                canvas.drawPath(flagPath, paint)
+                canvas.restore()
+            }
+        }
+        rect.set(x - radiusX, y - headY, x + radiusX, y + headY)
+        canvas.save()
+        if (glyph.denominator != 1) canvas.rotate(-18f, x, y)
+        if (glyph.hollow) {
+            canvas.drawOval(rect, hollowBackgroundPaint)
+            paint.style = Paint.Style.STROKE
+        }
+        canvas.drawOval(rect, paint)
+        paint.style = Paint.Style.FILL
+        canvas.restore()
+        repeat(glyph.dots) { dot ->
+            val dotY = y - if (note.step % 2 == 0) lineGap * 0.25f else 0f
+            canvas.drawCircle(x + headX * (1.6f + dot * 0.65f), dotY, lineGap * 0.1f, paint)
+        }
+        if (glyph.approximate) {
+            approximationPaint.color = paint.color
+            approximationPaint.textSize = lineGap * 0.5f
+            canvas.drawText("~", x + headX * (3.2f + glyph.dots * 0.65f), y + lineGap * 0.17f, approximationPaint)
+        }
+    }
+
+    private fun drawActivePitchOutline(canvas: Canvas, note: DrawNote, x: Float, y: Float) {
+        if (!pitchColors || note.interval.stateAt(quarterBeatPosition) != NoteTimeState.Active) return
+        val radiusX = headX * (if (durationDisplay == DurationDisplay.Symbols && note.glyph.denominator == 1) 1.2f else 1f)
+        val margin = lineGap * 0.2f
+        activeOutlinePaint.strokeWidth = maxOf(dp(1f), lineGap * 0.08f)
+        rect.set(x - radiusX - margin, y - headY - margin, x + radiusX + margin, y + headY + margin)
+        canvas.drawOval(rect, activeOutlinePaint)
+    }
+
     private fun rebuildVerticalGeometry() {
         val h = height.toFloat()
         val captionMetrics = textPaint.fontMetrics
@@ -429,7 +520,8 @@ class ScoreStaffView @JvmOverloads constructor(
         val w = width.toFloat(); val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
         val viewport = viewport()
-        val overscan = max(dp(16f), h * 0.105f * 0.52f * (maxHeadShift + 1f)) / viewport.pixelsPerQuarterBeat.toDouble()
+        val glyphMargin = if (durationDisplay == DurationDisplay.Symbols) lineGap * 3.2f else 0f
+        val overscan = max(dp(16f), headX * (maxHeadShift + 1f) + glyphMargin) / viewport.pixelsPerQuarterBeat.toDouble()
         val range = viewport.visibleBeatRange(overscan)
         selectVisible(range.start, range.endInclusive)
         val captionMetrics = textPaint.fontMetrics
@@ -437,7 +529,7 @@ class ScoreStaffView @JvmOverloads constructor(
         canvas.save()
         canvas.clipRect(0f, barBandBottom, w, labelBandTop)
         // Ribbons use nominal timing coordinates even when a nearby head is offset.
-        for (v in 0 until visibleCount) {
+        if (durationDisplay == DurationDisplay.Ribbons) for (v in 0 until visibleCount) {
             val note = notes[visibleNotes[v]]
             val interval = note.interval
             if (interval.endBeat <= interval.startBeat) continue
@@ -479,11 +571,7 @@ class ScoreStaffView @JvmOverloads constructor(
             val onset = viewport.beatToX(note.interval.startBeat)
             val x = onset + note.headShift * headX
             val y = noteY(note)
-            val paint = when (note.interval.stateAt(quarterBeatPosition)) {
-                NoteTimeState.Future -> futurePaint
-                NoteTimeState.Active -> activePaint
-                NoteTimeState.Past -> pastPaint
-            }
+            val paint = glyphPaint.apply { color = noteInkColor(note); style = Paint.Style.FILL }
             paint.strokeWidth = stemWidth
             if (note.step > 4) for (step in 6..note.step step 2) {
                 val ledgerY = staffCenter - step * lineGap / 2f
@@ -497,12 +585,17 @@ class ScoreStaffView @JvmOverloads constructor(
                 canvas.drawLine(onset, y - headY, onset, y + headY, paint)
                 canvas.drawLine(onset, y, x, y, paint)
             }
-            rect.set(x - headX, y - headY, x + headX, y + headY)
-            canvas.drawOval(rect, paint)
-            canvas.drawLine(x + stemX, y, x + stemX, y - lineGap * 1.7f, paint)
+            if (durationDisplay == DurationDisplay.Symbols) {
+                drawDurationGlyph(canvas, note, x, y, paint)
+            } else {
+                rect.set(x - headX, y - headY, x + headX, y + headY)
+                canvas.drawOval(rect, paint)
+                canvas.drawLine(x + stemX, y, x + stemX, y - lineGap * 1.7f, paint)
+            }
+            drawActivePitchOutline(canvas, note, x, y)
         }
         drawAccidentals(canvas, viewport, range.start, range.endInclusive)
-        drawNoteOffMarkers(canvas, viewport)
+        if (durationDisplay == DurationDisplay.Ribbons) drawNoteOffMarkers(canvas, viewport)
         canvas.restore()
 
         textPaint.color = color(R.color.muted)
@@ -599,7 +692,7 @@ class ScoreStaffView @JvmOverloads constructor(
                         val otherY = noteY(other)
                         val otherOnset = viewport.beatToX(other.interval.startBeat)
                         val end = viewport.beatToX(other.interval.endBeat)
-                        if (other.interval.endBeat > other.interval.startBeat && end > otherOnset + headX) {
+                        if (durationDisplay == DurationDisplay.Ribbons && other.interval.endBeat > other.interval.startBeat && end > otherOnset + headX) {
                             val markerHalf = lineGap * (if (other.lane == 0) 0.13f else 0.065f) + dp(1f)
                             if (overlaps(left, top, right, bottom, end - markerHaloPaint.strokeWidth / 2f,
                                     otherY - markerHalf, end + markerHaloPaint.strokeWidth / 2f, otherY + markerHalf))
@@ -607,11 +700,32 @@ class ScoreStaffView @JvmOverloads constructor(
                         }
                         if (!other.interval.headVisible(from, to)) continue
                         val x = otherOnset + other.headShift * headX
-                        if (overlaps(left, top, right, bottom, x - headX, otherY - headY, x + headX, otherY + headY))
-                            target = minOf(target, x - headX - gap - accidentalWidth - accidentalPadding)
-                        val stemX = x + headX * 0.9f
-                        if (overlaps(left, top, right, bottom, stemX - stemHalf, otherY - lineGap * 1.7f, stemX + stemHalf, otherY))
-                            target = minOf(target, stemX - stemHalf - gap - accidentalWidth - accidentalPadding)
+                        val conventional = durationDisplay == DurationDisplay.Symbols
+                        val headWidth = headX * (if (conventional && other.glyph.denominator == 1) 1.2f else 1f)
+                        if (overlaps(left, top, right, bottom, x - headWidth, otherY - headY, x + headWidth, otherY + headY))
+                            target = minOf(target, x - headWidth - gap - accidentalWidth - accidentalPadding)
+                        if (!conventional || other.glyph.hasStem) {
+                            val direction = if (conventional && other.step >= 0) 1f else -1f
+                            val stemX = x - direction * headX * 0.9f
+                            val stemEnd = otherY + direction * lineGap * (if (conventional) other.glyph.stemLengthUnits else 1.7f)
+                            if (overlaps(left, top, right, bottom, stemX - stemHalf, minOf(otherY, stemEnd),
+                                    stemX + stemHalf, maxOf(otherY, stemEnd)))
+                                target = minOf(target, stemX - stemHalf - gap - accidentalWidth - accidentalPadding)
+                            if (conventional && other.glyph.flags > 0) {
+                                val flagHeight = lineGap * (1.85f + (other.glyph.flags - 1) * 0.45f)
+                                val flagLeft = if (direction > 0f) stemX - lineGap * 0.9f else stemX
+                                val flagRight = if (direction > 0f) stemX else stemX + lineGap * 0.9f
+                                val flagEnd = stemEnd - direction * flagHeight
+                                if (overlaps(left, top, right, bottom, flagLeft, minOf(stemEnd, flagEnd), flagRight, maxOf(stemEnd, flagEnd)))
+                                    target = minOf(target, flagLeft - gap - accidentalWidth - accidentalPadding)
+                            }
+                        }
+                        if (conventional && (other.glyph.dots > 0 || other.glyph.approximate)) {
+                            val annotationLeft = x + headX * 1.4f
+                            if (overlaps(left, top, right, bottom, annotationLeft, otherY - lineGap * 0.6f,
+                                    x + glyphRight(other), otherY + lineGap * 0.3f))
+                                target = minOf(target, annotationLeft - gap - accidentalWidth - accidentalPadding)
+                        }
                         if (abs(other.step) > 4) {
                             val first = if (other.step > 0) 6 else -6
                             val last = other.step
@@ -651,7 +765,7 @@ class ScoreStaffView @JvmOverloads constructor(
             if (head + headX < viewport.leftX || head - headX > viewport.rightX) continue
             val path = if (note.spelling.accidental > 0) sharpPath else flatPath
             val paint = if (pass == 0) accidentalHaloPaint else accidentalPaint.apply {
-                color = when (note.interval.stateAt(quarterBeatPosition)) {
+                color = if (pitchColors) noteInkColor(note) else when (note.interval.stateAt(quarterBeatPosition)) {
                     NoteTimeState.Future -> futurePaint.color
                     NoteTimeState.Active -> activePaint.color
                     NoteTimeState.Past -> pastMarkerColor
@@ -764,9 +878,13 @@ class ScoreStaffView @JvmOverloads constructor(
             val end = viewport.beatToX(note.interval.endBeat)
             val visualHead = onset + note.headShift * headX
             val nearHead = abs(x - visualHead) <= max(dp(12f), headX)
-            val nearRibbon = note.interval.endBeat > note.interval.startBeat && x >= onset + headX && x <= end
+            val nearRibbon = durationDisplay == DurationDisplay.Ribbons && note.interval.endBeat > note.interval.startBeat && x >= onset + headX && x <= end
+            val nearGlyph = durationDisplay == DurationDisplay.Symbols &&
+                x >= visualHead + glyphLeft(note) - dp(4f) && x <= visualHead + glyphRight(note) + dp(4f) &&
+                y >= noteY(note) - note.glyph.aboveHeadUnits(note.step) * lineGap - dp(4f) &&
+                y <= noteY(note) + note.glyph.belowHeadUnits(note.step) * lineGap + dp(4f)
             val dy = abs(y - noteY(note))
-            if ((nearHead || nearRibbon) && dy < max(dp(12f), headY) && dy < distance) { closest = note.group; distance = dy }
+            if ((nearGlyph || ((nearHead || nearRibbon) && dy < max(dp(12f), headY))) && dy < distance) { closest = note.group; distance = dy }
         }
         return closest
     }

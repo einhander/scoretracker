@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/mainRoot" android:layout_width="match_parent" android:layout_height="match_parent">
+<LinearLayout
     android:layout_width="match_parent" android:layout_height="match_parent"
     android:orientation="vertical" android:paddingHorizontal="8dp" android:background="@color/surface">
+    <FrameLayout android:id="@+id/topPanelContainer" android:layout_width="match_parent" android:layout_height="wrap_content">
+    <LinearLayout android:id="@+id/topPanel" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
     <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
         <TextView android:id="@+id/fileNameText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:ellipsize="middle" android:maxLines="1" android:text="@string/no_midi" android:textSize="16sp" android:textStyle="bold" />
         <LinearLayout android:id="@+id/trackSelectorRow" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:gravity="center_vertical" android:visibility="gone">
@@ -10,6 +14,7 @@
         </LinearLayout>
         <Button android:id="@+id/testModeButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/test_mode" android:visibility="gone" />
         <ImageButton android:id="@+id/settingsButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_settings" android:tint="@color/ink" android:contentDescription="@string/settings" />
+        <ImageButton android:id="@+id/collapsePanelButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@android:drawable/arrow_up_float" android:tint="@color/ink" android:contentDescription="@string/panel_collapse" android:tooltipText="@string/panel_collapse" />
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
         <Button android:id="@+id/listenButton" android:layout_width="132dp" android:layout_height="48dp" android:minWidth="0dp" android:paddingHorizontal="8dp" android:textSize="14sp" android:maxLines="1" android:ellipsize="end" android:textAllCaps="false" android:enabled="false" android:text="@string/start_listening" />
@@ -24,6 +29,12 @@
         <TextView android:id="@+id/positionStatusText" style="@style/Widget.TempoScore.Status" android:layout_width="0dp" android:layout_weight="1.5" android:layout_height="wrap_content" android:text="@string/position_idle" />
         <TextView android:id="@+id/confidenceText" style="@style/Widget.TempoScore.Status" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:gravity="end" android:text="@string/beat_unavailable" />
     </LinearLayout>
+    </LinearLayout>
+    <TextView android:id="@+id/topPanelStrip" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:background="@color/surface_alt" android:gravity="center" android:text="@string/panel_strip"
+        android:textColor="@color/accent" android:textSize="10sp" android:includeFontPadding="false"
+        android:importantForAccessibility="no" android:visibility="gone" />
+    </FrameLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal">
         <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:orientation="vertical" android:background="@color/white">
             <com.einhander.temposcore.ui.ScoreStaffView android:id="@+id/scoreView" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:contentDescription="@string/score_preview" />
@@ -53,3 +64,10 @@
         </ScrollView>
     </LinearLayout>
 </LinearLayout>
+    <!-- Transparent 48dp target overlaps the score rather than reserving panel height. -->
+    <android.widget.Button android:id="@+id/expandPanelHitArea" android:layout_width="180dp" android:layout_height="48dp"
+        android:layout_gravity="top|center_horizontal" android:background="?attr/selectableItemBackground"
+        android:backgroundTint="@null" android:padding="0dp"
+        android:clickable="true" android:focusable="true" android:contentDescription="@string/panel_expand"
+        android:tooltipText="@string/panel_expand" android:visibility="gone" />
+</FrameLayout>

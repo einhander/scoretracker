@@ -1,4 +1,11 @@
 <resources>
+    <string name="panel_collapse">Свернуть панель управления</string>
+    <string name="panel_expand">Развернуть панель управления</string>
+    <string name="panel_strip">▾ Панель управления</string>
+    <string name="duration_symbols">Длительности: нотные знаки</string>
+    <string name="duration_ribbons">Длительности: ленты MIDI</string>
+    <string name="duration_symbols_hint">~ — ближайший знак; точное время — из MIDI</string>
+    <string name="pitch_colors">Разные цвета высот нот</string>
     <string name="browser_title">Открыть MIDI</string>
     <string name="browser_mp3_title">Открыть MP3</string>
     <string name="browser_mp3">MP3</string>

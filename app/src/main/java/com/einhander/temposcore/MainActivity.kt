@@ -25,6 +25,7 @@ import com.einhander.temposcore.midi.MidiFileParser
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 import com.einhander.temposcore.score.NoteNaming
+import com.einhander.temposcore.score.DurationDisplay
 import com.einhander.temposcore.score.AccidentalPreference
 import com.einhander.temposcore.score.NoteStartGroup
 import com.einhander.temposcore.score.ScoreNavigator
@@ -42,6 +43,10 @@ import com.einhander.temposcore.transport.TransportSnapshot
 import java.util.Locale
 import java.lang.ref.WeakReference
 import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/** Visual height only: the separate overlay keeps a full-size expand target. */
+internal fun collapsedPanelHeight(expandedHeight: Int): Int = (expandedHeight * 0.1f).roundToInt().coerceAtLeast(1)
 
 class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener, MidiBrowserDialog.Host {
     private lateinit var binding: ActivityMainBinding
@@ -59,6 +64,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     private var noteSpellingCache: NoteSpellingCache? = null
     private var showTestMode = false
     private var testPanelExpanded = true
+    private var upperPanelExpanded = true
+    private var durationDisplay = DurationDisplay.Symbols
+    private var pitchColors = false
     private var scoreScrubActive = false
     private var scoreScrubPosition = 0.0
     private var smoothedTestPosition = 0.0
@@ -111,6 +119,21 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         setContentView(binding.root)
         testAudioPlayer = TestAudioPlayer(this, this)
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        durationDisplay = DurationDisplay.entries.firstOrNull { it.name == prefs.getString(KEY_DURATION_DISPLAY, null) }
+            ?: DurationDisplay.Symbols
+        pitchColors = prefs.getBoolean(KEY_PITCH_COLORS, false)
+        binding.scoreView.durationDisplay = durationDisplay
+        binding.scoreView.pitchColors = pitchColors
+        upperPanelExpanded = prefs.getBoolean(KEY_UPPER_PANEL_EXPANDED, true)
+        binding.collapsePanelButton.setOnClickListener { setUpperPanelExpanded(false) }
+        binding.expandPanelHitArea.setOnClickListener { setUpperPanelExpanded(true) }
+        binding.topPanelContainer.setOnClickListener {
+            if (!upperPanelExpanded) setUpperPanelExpanded(true)
+        }
+        binding.mainRoot.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+            if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) applyUpperPanelLayout()
+        }
+        applyUpperPanelLayout()
         noteNaming = when (prefs.getString(KEY_NOTE_NAMING, NoteNaming.Letters.name)) {
             NoteNaming.Solfege.name -> NoteNaming.Solfege
             else -> NoteNaming.Letters
@@ -218,6 +241,45 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private fun treePreference(mode: BrowserMode) = if (mode == BrowserMode.MIDI) KEY_MIDI_TREE else KEY_MP3_TREE
+
+    private fun setUpperPanelExpanded(expanded: Boolean) {
+        val previous = if (expanded) binding.expandPanelHitArea else binding.collapsePanelButton
+        val transferInputFocus = previous.hasFocus()
+        val transferAccessibilityFocus = previous.isAccessibilityFocused
+        upperPanelExpanded = expanded
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(KEY_UPPER_PANEL_EXPANDED, expanded).apply()
+        applyUpperPanelLayout()
+        val target = if (expanded) binding.collapsePanelButton else binding.expandPanelHitArea
+        if (transferInputFocus) target.requestFocus()
+        if (transferAccessibilityFocus) target.post {
+            if (target.visibility == View.VISIBLE) {
+                target.performAccessibilityAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS, null)
+            }
+        }
+    }
+
+    private fun applyUpperPanelLayout() {
+        val width = binding.topPanelContainer.width
+        if (width > 0) {
+            // Measure natural expanded content even when hidden; never infer it from the collapsed wrapper.
+            binding.topPanel.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        }
+        val expandedHeight = binding.topPanel.measuredHeight.takeIf { it > 0 }
+            ?: (124f * resources.displayMetrics.density).toInt()
+        val slimHeight = collapsedPanelHeight(expandedHeight)
+        val targetHeight = if (upperPanelExpanded) android.view.ViewGroup.LayoutParams.WRAP_CONTENT else slimHeight
+        if (binding.topPanelContainer.layoutParams.height != targetHeight) {
+            binding.topPanelContainer.layoutParams = binding.topPanelContainer.layoutParams.apply { height = targetHeight }
+        }
+        binding.topPanel.visibility = if (upperPanelExpanded) View.VISIBLE else View.GONE
+        binding.topPanelContainer.isClickable = !upperPanelExpanded
+        binding.topPanelContainer.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        binding.topPanelStrip.visibility = if (upperPanelExpanded) View.GONE else View.VISIBLE
+        binding.expandPanelHitArea.visibility = if (upperPanelExpanded) View.GONE else View.VISIBLE
+        binding.topPanelStrip.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
+            minOf(10f * resources.displayMetrics.scaledDensity, slimHeight * 0.8f))
+    }
 
     private fun openFileBrowser(mode: BrowserMode) {
         if (getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(treePreference(mode), null) == null) {
@@ -603,12 +665,30 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         popup.menu.setGroupCheckable(3, true, true)
         sharps.isChecked = accidentalPreference == AccidentalPreference.Sharps
         flats.isChecked = accidentalPreference == AccidentalPreference.Flats
+        val symbols = popup.menu.add(5, MENU_DURATION_SYMBOLS, 6, getString(R.string.duration_symbols))
+        val ribbons = popup.menu.add(5, MENU_DURATION_RIBBONS, 7, getString(R.string.duration_ribbons))
+        popup.menu.setGroupCheckable(5, true, true)
+        symbols.isChecked = durationDisplay == DurationDisplay.Symbols
+        ribbons.isChecked = durationDisplay == DurationDisplay.Ribbons
+        popup.menu.add(6, MENU_PITCH_COLORS, 8, getString(R.string.pitch_colors)).apply {
+            isCheckable = true
+            isChecked = pitchColors
+        }
+        popup.menu.add(7, MENU_DURATION_HINT, 9, getString(R.string.duration_symbols_hint)).isEnabled = false
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 MENU_NOTATION_LETTERS -> { setNoteNaming(NoteNaming.Letters); true }
                 MENU_NOTATION_SOLFEGE -> { setNoteNaming(NoteNaming.Solfege); true }
                 MENU_ACCIDENTAL_SHARPS -> { setAccidentalPreference(AccidentalPreference.Sharps); true }
                 MENU_ACCIDENTAL_FLATS -> { setAccidentalPreference(AccidentalPreference.Flats); true }
+                MENU_DURATION_SYMBOLS -> { setDurationDisplay(DurationDisplay.Symbols); true }
+                MENU_DURATION_RIBBONS -> { setDurationDisplay(DurationDisplay.Ribbons); true }
+                MENU_PITCH_COLORS -> {
+                    pitchColors = !pitchColors
+                    binding.scoreView.pitchColors = pitchColors
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(KEY_PITCH_COLORS, pitchColors).apply()
+                    true
+                }
                 MENU_SHOW_TEST_MODE -> {
                     setTestModeVisible(!showTestMode)
                     true
@@ -672,6 +752,12 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             .putString(KEY_ACCIDENTAL_PREFERENCE, value.name).apply()
         score?.let { populateTrackSelector(it) }
         updateUiFromTransport()
+    }
+
+    private fun setDurationDisplay(value: DurationDisplay) {
+        durationDisplay = value
+        binding.scoreView.durationDisplay = value
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_DURATION_DISPLAY, value.name).apply()
     }
 
     private fun setNoteNaming(value: NoteNaming) {
@@ -783,6 +869,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val KEY_NOTE_NAMING = "note_naming"
         private const val KEY_ACCIDENTAL_PREFERENCE = "accidental_preference"
         private const val KEY_SHOW_TEST_MODE = "show_test_mode"
+        private const val KEY_UPPER_PANEL_EXPANDED = "upper_panel_expanded"
+        private const val KEY_DURATION_DISPLAY = "duration_display"
+        private const val KEY_PITCH_COLORS = "pitch_colors"
         private const val KEY_MIDI_TREE = "midi_tree_uri"
         private const val KEY_MP3_TREE = "mp3_tree_uri"
         private const val MENU_NOTATION_LETTERS = 1
@@ -791,6 +880,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val MENU_ACCIDENTAL_SHARPS = 4
         private const val MENU_ACCIDENTAL_FLATS = 5
         private const val MENU_ACCIDENTAL_HINT = 6
+        private const val MENU_DURATION_SYMBOLS = 7
+        private const val MENU_DURATION_RIBBONS = 8
+        private const val MENU_PITCH_COLORS = 9
+        private const val MENU_DURATION_HINT = 10
     }
 
 }

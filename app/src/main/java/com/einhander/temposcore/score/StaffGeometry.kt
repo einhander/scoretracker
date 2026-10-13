@@ -11,9 +11,10 @@ fun horizontalZoom(startZoom: Float, startSpan: Float, span: Float): Float {
 
 /** Full-selection extents in line-gap units, independent of the visible beat window. */
 data class StaffExtent(val top: Float = 2f, val bottom: Float = 2f) {
-    fun including(step: Int, accidental: Boolean, laneOffset: Float = 0f): StaffExtent = StaffExtent(
-        maxOf(top, step / 2f - laneOffset + 2.25f),
-        maxOf(bottom, -step / 2f + laneOffset + if (accidental) 0.95f else 0.55f),
+    fun including(step: Int, accidental: Boolean, laneOffset: Float = 0f,
+        aboveHead: Float = 2.25f, belowHead: Float = if (accidental) 0.95f else 0.55f): StaffExtent = StaffExtent(
+        maxOf(top, step / 2f - laneOffset + aboveHead),
+        maxOf(bottom, -step / 2f + laneOffset + belowHead),
     )
 }
 
