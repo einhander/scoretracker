@@ -305,25 +305,38 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val metricMinimum = 96f + 380f * resources.configuration.fontScale
         fun configureMetrics(row: android.widget.LinearLayout, metrics: android.widget.LinearLayout,
             availableWidth: Float, controlsWidth: Float, children: List<View>,
-            container: android.widget.LinearLayout = metrics) {
-            val stacked = availableWidth < controlsWidth + metricMinimum
+            container: android.widget.LinearLayout = metrics, minimum: Float = metricMinimum,
+            naturalMidiWidth: Boolean = false) {
+            val stacked = availableWidth < controlsWidth + minimum
             row.orientation = if (stacked) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
             container.layoutParams = (container.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
                 this.width = if (stacked) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
                 weight = if (stacked) 0f else 1f
             }
-            val vertical = (if (stacked) availableWidth else availableWidth - controlsWidth) < metricMinimum
+            val vertical = (if (stacked) availableWidth else availableWidth - controlsWidth) < minimum
             metrics.orientation = if (vertical) android.widget.LinearLayout.VERTICAL else android.widget.LinearLayout.HORIZONTAL
             children.forEachIndexed { index, child ->
                 child.layoutParams = (child.layoutParams as android.widget.LinearLayout.LayoutParams).apply {
-                    this.width = if (vertical) android.view.ViewGroup.LayoutParams.MATCH_PARENT else 0
-                    weight = if (vertical) 0f else if (index == 0) 2.5f else 1f
+                    this.width = if (vertical) android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                        else if (naturalMidiWidth && index == 0) android.view.ViewGroup.LayoutParams.WRAP_CONTENT else 0
+                    weight = if (vertical || naturalMidiWidth && index == 0) 0f else if (index == 0) 2.5f else 1f
                 }
             }
         }
         if (width > 0) {
+            // Expanded MIDI uses natural text width, not a weighted gap between − and +.
+            // Reserve three-digit BPM and the widest signed trim so ordinary tempo updates do not wrap the row.
+            fun textWidth(view: android.widget.TextView, text: String): Float =
+                text.split('\n').maxOf { view.paint.measureText(it) } / density
+            val midiWidth = 96f + 4f + textWidth(binding.tempoText, getString(R.string.midi_tempo, 999.9)) +
+                maxOf(textWidth(binding.tempoAdjustmentText, "+30"), textWidth(binding.tempoAdjustmentText, "-30"))
+            val liveWidth = textWidth(binding.liveTempoText, getString(R.string.live_tempo, "999.9"))
+            val transportWidth = textWidth(binding.transportTempoText, getString(R.string.transport_tempo, 999.9))
+            // LIVE/transport split remaining space equally; reserve enough for either label.
+            val fullMetricMinimum = midiWidth + 2f * maxOf(liveWidth, transportWidth) + 16f
             configureMetrics(binding.fullTempoRow, binding.fullTempos, width / density, 300f,
-                listOf(binding.midiTempoGroup, binding.liveTempoText, binding.transportTempoText))
+                listOf(binding.midiTempoGroup, binding.liveTempoText, binding.transportTempoText),
+                minimum = fullMetricMinimum, naturalMidiWidth = true)
             // Outer panel never stacks: its final 48dp child stays pinned at the right edge.
             configureMetrics(binding.compactContent, binding.compactTempos, width / density - 56f, 220f,
                 listOf(binding.compactMidiTempoGroup, binding.compactLiveTempoText, binding.compactTransportTempoText),
