@@ -239,7 +239,7 @@ void OboeInputEngine::resetPosition(double startQuarterBeat) noexcept {
 
 void OboeInputEngine::setManualPosition(double startQuarterBeat) noexcept {
     analyzer_.requestPositionReset(true);
-    transport_.resetPosition(startQuarterBeat);
+    transport_.resetPositionPreservingTempo(startQuarterBeat);
     if (matcher_) matcher_->requestLocalReacquire();
 }
 

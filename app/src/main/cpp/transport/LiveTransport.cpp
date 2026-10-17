@@ -43,9 +43,12 @@ void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexc
     requestedExpectedBpm_.store(expectedBpm, std::memory_order_relaxed);
     requestedTempoAdjustmentBpm_.store(0.0, std::memory_order_relaxed);
     requestedPosition_.store(std::max(0.0, startQuarterBeat), std::memory_order_relaxed);
+    requestedTempoPreservation_.store(false, std::memory_order_relaxed);
     positionGeneration_.fetch_add(1, std::memory_order_release);
     expectedBpmRt_ = expectedBpm;
     currentBpmRt_ = expectedBpm;
+    tempoHoldSecondsRt_ = 0.0;
+    appliedTempoPreservingGenerationRt_ = 0;
     positionRt_ = std::max(0.0, startQuarterBeat);
     cumulativeBaseBeatsRt_ = 0.0;
     publishedBpm_.store(currentBpmRt_, std::memory_order_relaxed);
@@ -61,13 +64,22 @@ void LiveTransport::configure(double expectedBpm, double startQuarterBeat) noexc
 }
 
 void LiveTransport::resetPosition(double startQuarterBeat) noexcept {
+    requestPositionReset(startQuarterBeat, false);
+}
+
+void LiveTransport::requestPositionReset(double startQuarterBeat, bool preserveTempo) noexcept {
     const double clamped = std::max(0.0, startQuarterBeat);
     requestedPosition_.store(clamped, std::memory_order_relaxed);
     publishedPosition_.store(clamped, std::memory_order_relaxed);
+    requestedTempoPreservation_.store(preserveTempo, std::memory_order_relaxed);
     positionGeneration_.fetch_add(1, std::memory_order_release);
     publishedPositionConfidence_.store(0.0, std::memory_order_relaxed);
     publishedPositionError_.store(0.0, std::memory_order_relaxed);
     publishedPositionState_.store(0, std::memory_order_relaxed);
+}
+
+void LiveTransport::resetPositionPreservingTempo(double startQuarterBeat) noexcept {
+    requestPositionReset(startQuarterBeat, true);
 }
 
 void LiveTransport::setExpectedBpm(double expectedBpm, double tempoAdjustmentBpm) noexcept {
@@ -174,6 +186,24 @@ void LiveTransport::processFramesImpl(int32_t numFrames, int32_t sampleRate,
         remainingPositionErrorRt_ = 0.0;
         appliedPositionGeneration_ = generation;
         invalidatePositionState();
+        if (requestedTempoPreservation_.load(std::memory_order_acquire)) {
+            appliedTempoPreservingGenerationRt_ = generation;
+            tempoHoldSecondsRt_ = 8.0;
+            tempoObservationVersionRt_ = UINT64_MAX;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                const uint64_t before = tempoVersion_.load(std::memory_order_acquire);
+                if (before & 1U) continue;
+                const bool ignoredValid = tempoTargetValid_.load(std::memory_order_relaxed);
+                (void)ignoredValid;
+                if (before == tempoVersion_.load(std::memory_order_acquire)) {
+                    tempoObservationVersionRt_ = before;
+                    break;
+                }
+            }
+        } else {
+            appliedTempoPreservingGenerationRt_ = 0;
+            tempoHoldSecondsRt_ = 0.0;
+        }
     }
     if (lastContinuityEpochRt_ && continuityEpoch != lastContinuityEpochRt_) {
         remainingPositionErrorRt_ = 0.0;
@@ -184,13 +214,17 @@ void LiveTransport::processFramesImpl(int32_t numFrames, int32_t sampleRate,
     bool valid = false;
     double target = 0.0;
     double confidence = 0.0;
+    uint64_t coherentTempoVersion = UINT64_MAX;
     for (int attempt = 0; attempt < 3; ++attempt) {
         const uint64_t before = tempoVersion_.load(std::memory_order_acquire);
         if (before & 1U) continue;
         target = tempoTargetBpm_.load(std::memory_order_relaxed);
         confidence = tempoTargetConfidence_.load(std::memory_order_relaxed);
         valid = tempoTargetValid_.load(std::memory_order_relaxed);
-        if (before == tempoVersion_.load(std::memory_order_acquire)) break;
+        if (before == tempoVersion_.load(std::memory_order_acquire)) {
+            coherentTempoVersion = before;
+            break;
+        }
         valid = false;
     }
     if (!std::isfinite(target) || !std::isfinite(confidence)) { valid = false; target = 0.0; confidence = 0.0; }
@@ -268,12 +302,19 @@ void LiveTransport::processFramesImpl(int32_t numFrames, int32_t sampleRate,
     const double positionStart = std::max(0.0, positionRt_);
     const double baseBeatsStart = cumulativeBaseBeatsRt_;
     const double dt = static_cast<double>(numFrames) / sampleRate;
+    if (valid && appliedTempoPreservingGenerationRt_ == generation &&
+        coherentTempoVersion != UINT64_MAX && coherentTempoVersion != tempoObservationVersionRt_) {
+        tempoHoldSecondsRt_ = 0.0;
+        appliedTempoPreservingGenerationRt_ = 0;
+    }
+    const bool holdResetTempo = tempoHoldSecondsRt_ > 0.0;
+    if (holdResetTempo) tempoHoldSecondsRt_ = std::max(0.0, tempoHoldSecondsRt_ - dt);
     const double tau = valid ? (confidence >= 0.75 ? 0.7 : 1.2) : 4.0;
     const double alpha = 1.0 - std::exp(-dt / tau);
     expectedBpmRt_ = requestedExpectedBpm_.load(std::memory_order_relaxed);
     const double adjustment = tempoAdjustmentEnabled_.load(std::memory_order_relaxed)
         ? requestedTempoAdjustmentBpm_.load(std::memory_order_relaxed) : 0.0;
-    const double rawTarget = valid ? target : expectedBpmRt_;
+    const double rawTarget = valid ? target : (holdResetTempo ? currentBpmRt_ - adjustment : expectedBpmRt_);
     const double boundedTarget = std::clamp(rawTarget + adjustment,
                                             expectedBpmRt_ * 0.55, expectedBpmRt_ * 1.80);
     currentBpmRt_ += alpha * (boundedTarget - currentBpmRt_);

@@ -222,6 +222,138 @@ void test_transport_position_reset_rejects_queued_pre_reset_match() {
     CHECK(rig.transport.snapshot().quarterBeatPosition < 50.1);
 }
 
+void test_manual_position_reset_holds_tempo_through_analyzer_warmup_only() {
+    LiveTransport transport;
+    transport.configure(120.0, 0.0);
+    transport.beginStreamEpoch(1);
+    BeatObservation valid;
+    valid.detectedBpm = 150.0;
+    valid.confidence = 1.0f;
+    valid.tempoValid = true;
+    transport.submitTempoObservation(valid);
+    for (uint64_t frame = 0; frame < 48000 * 12; frame += 480)
+        transport.processSourceFrames(480, 48000, 1, 1, frame);
+    CHECK_NEAR(transport.snapshot().transportBpm, 150.0, 1e-5);
+
+    // Same operation used by setManualPosition; invalid detector results are
+    // submitted throughout BeatTracker's reset/history refill period.
+    transport.resetPositionPreservingTempo(40.0);
+    // Callback may run before analyzer submits its first invalid warm-up sample;
+    // pre-seek valid target must not be treated as a fresh reacquisition.
+    transport.processSourceFrames(480, 48000, 1, 1, 48000 * 12);
+    BeatObservation invalid;
+    for (uint64_t frame = 48000 * 12 + 480; frame < 48000 * 19; frame += 480) {
+        transport.submitTempoObservation(invalid);
+        transport.processSourceFrames(480, 48000, 1, 1, frame);
+    }
+    CHECK_NEAR(transport.snapshot().transportBpm, 150.0, 1e-5);
+
+    // A normal position reset does not gain this hold; invalid observations
+    // retain the established fallback-to-expected behavior.
+    transport.resetPosition(0.0);
+    for (uint64_t frame = 48000 * 19; frame < 48000 * 27; frame += 480) {
+        transport.submitTempoObservation(invalid);
+        transport.processSourceFrames(480, 48000, 1, 1, frame);
+    }
+    CHECK(transport.snapshot().transportBpm < 150.0);
+}
+
+void test_manual_reset_tempo_hold_trim_rate_and_reacquisition() {
+    for (double trim : {-5.0, 5.0}) {
+        LiveTransport transport;
+        transport.configure(120.0, 0.0);
+        transport.beginStreamEpoch(1);
+        transport.setExpectedBpm(120.0, trim);
+        BeatObservation valid;
+        valid.detectedBpm = 145.0;
+        valid.confidence = 1.0f;
+        valid.tempoValid = true;
+        transport.submitTempoObservation(valid);
+        for (uint64_t frame = 0; frame < 44100 * 12; frame += 441)
+            transport.processSourceFrames(441, 44100, 1, 1, frame);
+        const double established = transport.snapshot().transportBpm;
+        transport.resetPositionPreservingTempo(10.0);
+        BeatObservation invalid;
+        for (uint64_t frame = 44100 * 12; frame < 44100 * 18; frame += 441) {
+            transport.submitTempoObservation(invalid);
+            transport.processSourceFrames(441, 44100, 1, 1, frame);
+        }
+        CHECK_NEAR(transport.snapshot().transportBpm, established, 1e-5);
+        transport.submitTempoObservation(valid);
+        transport.processSourceFrames(441, 44100, 1, 1, 44100 * 18);
+        for (uint64_t frame = 44100 * 18 + 441; frame < 44100 * 20; frame += 441) {
+            transport.submitTempoObservation(invalid);
+            transport.processSourceFrames(441, 44100, 1, 1, frame);
+        }
+        CHECK(transport.snapshot().transportBpm < established);
+    }
+
+    LiveTransport expiry;
+    expiry.configure(120.0, 0.0);
+    expiry.beginStreamEpoch(2);
+    expiry.setExpectedBpm(120.0, 0.0);
+    BeatObservation valid;
+    valid.detectedBpm = 160.0;
+    valid.confidence = 1.0f;
+    valid.tempoValid = true;
+    expiry.submitTempoObservation(valid);
+    for (uint64_t frame = 0; frame < 48000 * 12; frame += 480)
+        expiry.processSourceFrames(480, 48000, 2, 1, frame);
+    expiry.resetPositionPreservingTempo(0.0);
+    BeatObservation invalid;
+    for (uint64_t frame = 48000 * 12; frame < 48000 * 22; frame += 480) {
+        expiry.submitTempoObservation(invalid);
+        expiry.processSourceFrames(480, 48000, 2, 1, frame);
+    }
+    CHECK(expiry.snapshot().transportBpm < 160.0);
+}
+
+void test_configure_clears_pending_manual_tempo_preservation() {
+    LiveTransport transport;
+    transport.configure(120.0, 0.0);
+    transport.beginStreamEpoch(3);
+    BeatObservation detected;
+    detected.detectedBpm = 160.0;
+    detected.confidence = 1.0f;
+    detected.tempoValid = true;
+    transport.submitTempoObservation(detected);
+    for (uint64_t frame = 0; frame < 48000 * 12; frame += 480)
+        transport.processSourceFrames(480, 48000, 3, 1, frame);
+    transport.resetPositionPreservingTempo(20.0);
+    transport.configure(120.0, 0.0);
+    transport.beginStreamEpoch(4);
+    BeatObservation invalid;
+    for (uint64_t frame = 0; frame < 48000 * 10; frame += 480) {
+        transport.submitTempoObservation(invalid);
+        transport.processSourceFrames(480, 48000, 4, 1, frame);
+    }
+    CHECK(transport.snapshot().transportBpm < 140.0);
+}
+
+void test_stale_valid_tempo_does_not_pause_manual_hold_timer() {
+    LiveTransport transport;
+    transport.configure(120.0, 0.0);
+    transport.beginStreamEpoch(5);
+    BeatObservation valid;
+    valid.detectedBpm = 160.0;
+    valid.confidence = 1.0f;
+    valid.tempoValid = true;
+    transport.submitTempoObservation(valid);
+    for (uint64_t frame = 0; frame < 48000 * 12; frame += 480)
+        transport.processSourceFrames(480, 48000, 5, 1, frame);
+    transport.resetPositionPreservingTempo(0.0);
+    for (uint64_t frame = 48000 * 12; frame < 48000 * 22; frame += 480)
+        transport.processSourceFrames(480, 48000, 5, 1, frame); // stale valid snapshot
+    BeatObservation invalid;
+    transport.submitTempoObservation(invalid);
+    transport.processSourceFrames(480, 48000, 5, 1, 48000 * 22);
+    for (uint64_t frame = 48000 * 22 + 480; frame < 48000 * 30; frame += 480) {
+        transport.submitTempoObservation(invalid);
+        transport.processSourceFrames(480, 48000, 5, 1, frame);
+    }
+    CHECK(transport.snapshot().transportBpm < 150.0);
+}
+
 void test_transport_history_interpolates_integrated_base_and_corrections() {
     TransportHistory history;
     history.append(TransportHistorySegment{
@@ -427,6 +559,10 @@ REGISTER_TEST(test_delayed_match_projection_subtracts_correction_applied_after_m
 REGISTER_TEST(test_transport_effective_rate_tracks_bounded_positive_and_negative_corrections);
 REGISTER_TEST(test_transport_continuity_epoch_invalidates_confidence_without_reposition);
 REGISTER_TEST(test_transport_position_reset_rejects_queued_pre_reset_match);
+REGISTER_TEST(test_manual_position_reset_holds_tempo_through_analyzer_warmup_only);
+REGISTER_TEST(test_manual_reset_tempo_hold_trim_rate_and_reacquisition);
+REGISTER_TEST(test_configure_clears_pending_manual_tempo_preservation);
+REGISTER_TEST(test_stale_valid_tempo_does_not_pause_manual_hold_timer);
 REGISTER_TEST(test_transport_history_interpolates_integrated_base_and_corrections);
 REGISTER_TEST(test_history_spsc_overflow_fails_closed_without_overwriting_old_slots);
 REGISTER_TEST(test_transport_missing_historical_coverage_rejects_even_young_observation);

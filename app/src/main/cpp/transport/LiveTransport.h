@@ -41,6 +41,7 @@ public:
     void beginStreamEpoch(uint64_t streamEpoch) noexcept;
     void configure(double expectedBpm, double startQuarterBeat) noexcept;
     void resetPosition(double startQuarterBeat) noexcept;
+    void resetPositionPreservingTempo(double startQuarterBeat) noexcept;
     void setExpectedBpm(double expectedBpm, double tempoAdjustmentBpm = 0.0) noexcept;
     void setTempoAdjustmentEnabled(bool enabled) noexcept {
         tempoAdjustmentEnabled_.store(enabled, std::memory_order_release);
@@ -88,6 +89,7 @@ private:
                   "Observation mailbox indices must be lock-free on supported ABIs");
     bool enqueueObservation(const PendingObservation& observation) noexcept;
     bool dequeueObservation(PendingObservation& observation) noexcept;
+    void requestPositionReset(double startQuarterBeat, bool preserveTempo) noexcept;
     void processFramesImpl(int32_t numFrames, int32_t sampleRate,
                            uint64_t streamEpoch, uint64_t continuityEpoch,
                            uint64_t firstSourceFrame) noexcept;
@@ -118,7 +120,11 @@ private:
     std::atomic<bool> tempoAdjustmentEnabled_{true};
     std::atomic<double> requestedPosition_{0.0};
     std::atomic<uint64_t> positionGeneration_{0};
+    std::atomic<bool> requestedTempoPreservation_{false};
     uint64_t appliedPositionGeneration_ = 0;
+    uint64_t appliedTempoPreservingGenerationRt_ = 0;
+    uint64_t tempoObservationVersionRt_ = UINT64_MAX;
+    double tempoHoldSecondsRt_ = 0.0;
 
     std::atomic<double> publishedBpm_{120.0};
     std::atomic<double> publishedDetectedBpm_{0.0};
