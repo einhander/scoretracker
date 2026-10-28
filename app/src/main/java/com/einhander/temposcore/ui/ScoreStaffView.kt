@@ -19,6 +19,7 @@ import com.einhander.temposcore.score.BeatViewport
 import com.einhander.temposcore.score.StaffExtent
 import com.einhander.temposcore.score.staffNoteGeometry
 import com.einhander.temposcore.score.staffLabelRows
+import com.einhander.temposcore.score.sharesAccidentalColumns
 import com.einhander.temposcore.score.DurationDisplay
 import com.einhander.temposcore.score.DurationGlyph
 import com.einhander.temposcore.score.durationGlyph
@@ -696,13 +697,16 @@ class ScoreStaffView @JvmOverloads constructor(
                 // Coincident same-pitch voices have coincident heads; each still paints its own sign.
                 origin = onset + accidentalOffsets[accidentalIndices[duplicate]]
             } else {
-                // Each correction moves strictly left of at least one obstacle. No temporal anchor moves.
+                // Pack only this onset's chord. At low zoom, avoiding unrelated heads,
+                // releases or signs recursively pushes accidentals back to earlier notes.
+                // Prefer local overlap (with halos) over changing a sign's apparent owner.
                 for (attempt in 0 until visibleCount * 4 + accidentalCount + 1) {
                     val left = origin - accidentalPadding
                     val right = origin + accidentalWidth + accidentalPadding
                     var target = origin
                     for (o in 0 until visibleCount) {
                         val other = notes[visibleNotes[o]]
+                        if (!sharesAccidentalColumns(note.note.startTick, other.note.startTick)) continue
                         val otherY = noteY(other)
                         val otherOnset = viewport.beatToX(other.interval.startBeat)
                         val end = viewport.beatToX(other.interval.endBeat)
@@ -753,6 +757,8 @@ class ScoreStaffView @JvmOverloads constructor(
                         }
                     }
                     for (g in 0 until accidentalCount) {
+                        val other = notes[accidentalIndices[g]]
+                        if (!sharesAccidentalColumns(note.note.startTick, other.note.startTick)) continue
                         if (overlaps(left, top, right, bottom, accidentalLeft[g], accidentalTop[g], accidentalRight[g], accidentalBottom[g]))
                             target = minOf(target, accidentalLeft[g] - gap - accidentalWidth - accidentalPadding)
                     }

@@ -3,6 +3,10 @@ package com.einhander.temposcore.score
 import com.einhander.temposcore.midi.MidiNote
 import com.einhander.temposcore.midi.MidiScore
 
+/** Only simultaneous notes may share accidental columns. Pixel proximity is not ownership. */
+fun sharesAccidentalColumns(startTick: Long, otherStartTick: Long): Boolean =
+    startTick == otherStartTick
+
 /** Horizontal-only magnification; the transport beat remains anchored at the cursor. */
 fun horizontalZoom(startZoom: Float, startSpan: Float, span: Float): Float {
     if (!startSpan.isFinite() || !span.isFinite() || startSpan <= 0f || span <= 0f) return startZoom
