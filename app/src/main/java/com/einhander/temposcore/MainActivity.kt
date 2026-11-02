@@ -189,6 +189,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         binding.scoreView.accidentalPreference = accidentalPreference
         showTestMode = prefs.getBoolean(KEY_SHOW_TEST_MODE, false)
         applyTestModeVisibility()
+        binding.scoreView.horizontalZoom = prefs.getFloat(KEY_SCORE_ZOOM, 1f)
+        binding.scoreView.onHorizontalZoomChanged = { zoom ->
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putFloat(KEY_SCORE_ZOOM, zoom).apply()
+        }
 
         binding.settingsButton.setOnClickListener { showSettingsMenu() }
         binding.testModeButton.setOnClickListener {
@@ -216,6 +220,9 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             updateUiFromTransport()
         }
         binding.scoreView.onNoteGroupsRequested = { groups -> showNoteGroups(groups) }
+
+        prefs.getString(KEY_SELECTED_MIDI, null)?.let { runCatching { Uri.parse(it) }.getOrNull() }?.let(::loadMidi)
+        prefs.getString(KEY_SELECTED_AUDIO, null)?.let { runCatching { Uri.parse(it) }.getOrNull() }?.let(::loadTestAudio)
 
         binding.loadMidiButton.setOnClickListener {
             openFileBrowser(BrowserMode.MIDI)
@@ -277,6 +284,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
                 if (spinnerPopulating) return
                 trackSelection = TrackSelection.Track(pos)
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_SELECTED_MIDI, null)?.let { midiUri ->
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(trackPreference(midiUri), pos).apply()
+                }
                 visibleNotes = score?.visibleNotes(trackSelection) ?: emptyList()
                 binding.scoreView.trackSelection = trackSelection
                 binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
@@ -288,6 +299,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
     }
 
     private fun treePreference(mode: BrowserMode) = if (mode == BrowserMode.MIDI) KEY_MIDI_TREE else KEY_MP3_TREE
+    private fun trackPreference(midiUri: String) = "$KEY_TRACK_PREFIX$midiUri"
 
     private fun setUpperPanelExpanded(expanded: Boolean) {
         val previous = if (expanded) binding.expandPanelButton else binding.collapsePanelButton
@@ -497,7 +509,15 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             handler.post {
                 val activity = weak.get()
                 if (activity != null && !activity.isDestroyed && !activity.isFinishing && activity.midiLoadGeneration == token) {
-                    result.fold(onSuccess = { (parsed, name) -> activity.applyLoadedMidi(parsed, name) }, onFailure = { error ->
+                    result.fold(onSuccess = { (parsed, name) ->
+                        activity.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_SELECTED_MIDI, uri.toString()).apply()
+                        activity.persistSelectedUri(uri)
+                        activity.applyLoadedMidi(parsed, name, uri)
+                    }, onFailure = { error ->
+                        val prefs = activity.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        if (prefs.getString(KEY_SELECTED_MIDI, null) == uri.toString()) {
+                            prefs.edit().remove(KEY_SELECTED_MIDI).apply()
+                        }
                         Toast.makeText(activity, activity.getString(R.string.midi_error, error.message), Toast.LENGTH_LONG).show()
                     })
                     activity.binding.loadMidiButton.isEnabled = true
@@ -506,15 +526,18 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         }.start()
     }
 
-    private fun applyLoadedMidi(parsed: MidiScore, name: String) {
+    private fun applyLoadedMidi(parsed: MidiScore, name: String, uri: Uri) {
         testAudioPlayer.stop()
         if (nativeInitialized && NativeAudioBridge.state().running) NativeAudioBridge.stop()
         score = parsed
         noteSpellingCache = NoteSpellingCache(parsed, parsed.notes, accidentalPreference)
         val defaultTrack = parsed.tracks.firstOrNull { it.noteCount > 0 }?.index
-        trackSelection = defaultTrack?.let { TrackSelection.Track(it) }
+        val fallbackTrack = defaultTrack?.let { TrackSelection.Track(it) }
             ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
             ?: TrackSelection.All
+        val savedTrack = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            .getInt(trackPreference(uri.toString()), -1)
+        trackSelection = if (parsed.tracks.any { it.index == savedTrack }) TrackSelection.Track(savedTrack) else fallbackTrack
         visibleNotes = parsed.visibleNotes(trackSelection)
         binding.scoreView.trackSelection = trackSelection
         populateTrackSelector(parsed)
@@ -985,25 +1008,45 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val resolver = applicationContext.contentResolver
         val handler = Handler(Looper.getMainLooper())
         Thread {
-            val name = runCatching {
+            val result = runCatching {
+                resolver.openInputStream(uri)?.use { input -> input.read() } ?: error("Could not read selected audio")
                 resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
                     if (it.moveToFirst()) it.getString(0) else null
                 }
-            }.getOrNull()
+            }
             handler.post {
                 val activity = weak.get()
                 if (activity != null && !activity.isDestroyed && !activity.isFinishing && activity.testAudioLoadGeneration == token) {
-                    activity.testAudioPlayer.load(uri)
-                    activity.binding.testAudioNameText.text = name ?: activity.getString(R.string.test_audio_fallback)
-                    activity.binding.testPlayPauseButton.isEnabled = activity.score != null
-                    activity.binding.testRestartButton.isEnabled = activity.score != null
-                    activity.binding.testStopButton.isEnabled = false
-                    activity.binding.testSeekBar.isEnabled = true
+                    result.fold(onSuccess = { name ->
+                        activity.testAudioPlayer.load(uri)
+                        activity.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_SELECTED_AUDIO, uri.toString()).apply()
+                        activity.persistSelectedUri(uri)
+                        activity.binding.testAudioNameText.text = name ?: activity.getString(R.string.test_audio_fallback)
+                        activity.binding.testPlayPauseButton.isEnabled = activity.score != null
+                        activity.binding.testRestartButton.isEnabled = activity.score != null
+                        activity.binding.testStopButton.isEnabled = false
+                        activity.binding.testSeekBar.isEnabled = true
+                    }, onFailure = { error ->
+                        val prefs = activity.getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                        if (prefs.getString(KEY_SELECTED_AUDIO, null) == uri.toString()) {
+                            prefs.edit().remove(KEY_SELECTED_AUDIO).apply()
+                        }
+                        Toast.makeText(activity, activity.getString(R.string.test_error, error.message ?: "Could not read selected audio"), Toast.LENGTH_LONG).show()
+                    })
                     activity.binding.loadTestAudioButton.isEnabled = true
                     activity.updateTransportControls()
                 }
             }
         }.start()
+    }
+
+    private fun persistSelectedUri(uri: Uri) {
+        try {
+            contentResolver.takePersistableUriPermission(uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+            // Browser-selected documents inherit permission from saved directory tree.
+        }
     }
 
     override fun onTestAudioStateChanged(state: TestAudioPlayer.State) {
@@ -1065,6 +1108,10 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val KEY_PITCH_COLORS = "pitch_colors"
         private const val KEY_MIDI_TREE = "midi_tree_uri"
         private const val KEY_MP3_TREE = "mp3_tree_uri"
+        private const val KEY_SELECTED_MIDI = "selected_midi_uri"
+        private const val KEY_SELECTED_AUDIO = "selected_audio_uri"
+        private const val KEY_SCORE_ZOOM = "score_horizontal_zoom"
+        private const val KEY_TRACK_PREFIX = "selected_track_for_midi:"
         private const val MENU_NOTATION_LETTERS = 1
         private const val MENU_NOTATION_SOLFEGE = 2
         private const val MENU_SHOW_TEST_MODE = 3

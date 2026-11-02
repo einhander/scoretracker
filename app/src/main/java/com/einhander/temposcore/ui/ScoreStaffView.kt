@@ -215,6 +215,7 @@ class ScoreStaffView @JvmOverloads constructor(
     var onPositionScrubChanged: ((Double) -> Unit)? = null
     var onPositionScrubFinished: ((Double) -> Unit)? = null
     var onNoteGroupsRequested: ((List<NoteStartGroup>) -> Unit)? = null
+    var onHorizontalZoomChanged: ((Float) -> Unit)? = null
 
     private var scrubbing = false
     private var scrubStartX = 0f
@@ -225,6 +226,15 @@ class ScoreStaffView @JvmOverloads constructor(
     private var pendingOverflowTap = false
     private var pointerClick = false
     private var horizontalZoomFactor = 1f
+    var horizontalZoom: Float
+        get() = horizontalZoomFactor
+        set(value) {
+            val zoom = value.coerceIn(0.5f, 3f)
+            if (horizontalZoomFactor == zoom) return
+            horizontalZoomFactor = zoom
+            rebuildLabels()
+            invalidate()
+        }
     private var multiTouch = false
     private var pinchStartSpan = 0f
     private var pinchStartZoom = 1f
@@ -957,6 +967,7 @@ class ScoreStaffView @JvmOverloads constructor(
                             val zoom = horizontalZoom(pinchStartZoom, pinchStartSpan, span)
                             if (zoom != horizontalZoomFactor) {
                                 horizontalZoomFactor = zoom
+                                onHorizontalZoomChanged?.invoke(zoom)
                                 rebuildLabels()
                                 invalidate()
                             }

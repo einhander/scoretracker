@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Keep the complete mark inside the adaptive icon's central safe circle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Tapered metronome case and broad, steady foot. -->
+    <path
+        android:fillColor="#F7F3E6"
+        android:pathData="M47,31L61,31Q63,31 63.5,33.5L74,73Q74.8,76 71.5,76L36.5,76Q33.2,76 34,73L44.5,33.5Q45,31 47,31ZM49,36L40,70L68,70L59,36Z"
+        android:fillType="evenOdd" />
+    <!-- Three engraved score rules anchor the moving needle. -->
+    <path
+        android:fillColor="#558476"
+        android:pathData="M47,56h14v2h-14zM45.5,61h17v2h-17zM44,66h20v2h-20z" />
+    <!-- Bright pendulum, readable even at small launcher sizes. -->
+    <path
+        android:fillColor="#79E2B5"
+        android:pathData="M51.8,65.1L63.2,39.5L66.8,41.1L55.4,66.7ZM61,38.5Q61,36 63.5,36L68.5,36Q71,36 71,38.5L71,42Q71,44.5 68.5,44.5L63.5,44.5Q61,44.5 61,42Z" />
+    <path
+        android:fillColor="#F7F3E6"
+        android:pathData="M57.5,66a3.5,3.5 0,1 1,-7 0a3.5,3.5 0,1 1,7 0" />
+</vector>
