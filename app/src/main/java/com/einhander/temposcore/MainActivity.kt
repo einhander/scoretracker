@@ -697,7 +697,12 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 updateUiFromTransport()
             }
             .show()
-        dialog.window?.decorView?.systemUiVisibility = window.decorView.systemUiVisibility
+        // A tall checklist must not inherit the activity's immersive flags: with
+        // LAYOUT_HIDE_NAVIGATION the button row would land in the system's swipe
+        // strip and eat touches (reported as a vertically shifted tap zone). A
+        // normal dialog inset keeps Готово/Отмена fully reachable; the activity
+        // reasserts immersive mode on regained focus.
+        dialog.window?.decorView?.systemUiVisibility = 0
     }
 
     private fun configureNativeEngine() {
