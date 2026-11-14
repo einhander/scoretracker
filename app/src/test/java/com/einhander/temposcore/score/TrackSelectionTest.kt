@@ -34,6 +34,26 @@ class TrackSelectionTest {
     }
 
     @Test
+    fun dualVisibleNotesUnionsBothTracksInFileOrder() {
+        val forward = score.visibleNotes(TrackSelection.Dual(0, 1)).map { it.pitch }
+        val swapped = score.visibleNotes(TrackSelection.Dual(1, 0)).map { it.pitch }
+        assertEquals(listOf(60, 72), forward)
+        assertEquals(forward, swapped)
+    }
+
+    @Test
+    fun dualWithRepeatedIndexShowsSingleTrack() {
+        assertEquals(listOf(60), score.visibleNotes(TrackSelection.Dual(0, 0)).map { it.pitch })
+    }
+
+    @Test
+    fun navigatorSeesUnionOfDualTracks() {
+        val union = score.visibleNotes(TrackSelection.Dual(0, 1))
+        assertEquals(listOf(60), ScoreNavigator.soundingNotes(score, union, 0.5).map { it.pitch })
+        assertEquals(listOf(72), ScoreNavigator.nextNotes(score, union, 0.5).map { it.pitch })
+    }
+
+    @Test
     fun navigatorUsesFilteredNotes() {
         assertEquals(listOf(60), ScoreNavigator.soundingNotes(score, score.visibleNotes(TrackSelection.Track(0)), 0.5).map { it.pitch })
         assertEquals(emptyList<MidiNote>(), ScoreNavigator.soundingNotes(score, score.visibleNotes(TrackSelection.Track(1)), 0.5))

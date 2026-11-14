@@ -12,11 +12,14 @@ import android.provider.OpenableColumns
 import android.view.Choreographer
 import android.view.Menu
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
+import android.widget.CheckBox
+import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -87,12 +90,27 @@ internal fun applySettingsMenuChecks(selectedRadioItemIds: List<Int>, toggleChec
     for ((id, checked) in toggleChecks) setChecked(id, checked)
 }
 
+/** Outcome of one multi-select toggle; blocked means the caller must explain the limit. */
+internal data class TrackToggleResult(val selected: List<Int>, val blocked: Boolean)
+
+/**
+ * Toggle a track in the staff selection list: at most [capacity] tracks,
+ * at least [minimum] remain selected. Insertion order is preserved.
+ */
+internal fun toggleTrackSelection(selected: List<Int>, tapped: Int, capacity: Int = 2, minimum: Int = 1): TrackToggleResult {
+    if (tapped in selected) {
+        return if (selected.size <= minimum) TrackToggleResult(selected, blocked = true)
+        else TrackToggleResult(selected - tapped, blocked = false)
+    }
+    return if (selected.size >= capacity) TrackToggleResult(selected, blocked = true)
+    else TrackToggleResult(selected + tapped, blocked = false)
+}
+
 class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudioPlayer.Listener, MidiBrowserDialog.Host {
     private lateinit var binding: ActivityMainBinding
     private var score: MidiScore? = null
     private var trackSelection: TrackSelection = TrackSelection.All
     private var visibleNotes: List<MidiNote> = emptyList()
-    private var spinnerPopulating = false
     private var expectedBpm = 120.0
     private var tempoAdjustmentBpm = 0
     private var nativeInitialized = false
@@ -278,28 +296,13 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             }
         })
 
-        binding.trackSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (spinnerPopulating) return
-                trackSelection = TrackSelection.Track(pos)
-                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_SELECTED_MIDI, null)?.let { midiUri ->
-                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
-                        .putInt(trackPreference(midiUri), pos).apply()
-                }
-                visibleNotes = score?.visibleNotes(trackSelection) ?: emptyList()
-                binding.scoreView.trackSelection = trackSelection
-                binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
-                    (view?.contentDescription?.toString() ?: parent?.getItemAtPosition(pos)?.toString() ?: "")
-                updateUiFromTransport()
-            }
-        }
+        binding.trackSelectionButton.setOnClickListener { showTrackSelectionDialog() }
         updateTransportControls()
     }
 
     private fun treePreference(mode: BrowserMode) = if (mode == BrowserMode.MIDI) KEY_MIDI_TREE else KEY_MP3_TREE
     private fun trackPreference(midiUri: String) = "$KEY_TRACK_PREFIX$midiUri"
+    private fun secondTrackPreference(midiUri: String) = "$KEY_SECOND_TRACK_PREFIX$midiUri"
 
     private fun setUpperPanelExpanded(expanded: Boolean) {
         val previous = if (expanded) binding.expandPanelButton else binding.collapsePanelButton
@@ -535,9 +538,15 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         val fallbackTrack = defaultTrack?.let { TrackSelection.Track(it) }
             ?: parsed.tracks.firstOrNull()?.let { TrackSelection.Track(it.index) }
             ?: TrackSelection.All
-        val savedTrack = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getInt(trackPreference(uri.toString()), -1)
-        trackSelection = if (parsed.tracks.any { it.index == savedTrack }) TrackSelection.Track(savedTrack) else fallbackTrack
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val savedPrimary = prefs.getInt(trackPreference(uri.toString()), -1)
+        val savedSecond = prefs.getInt(secondTrackPreference(uri.toString()), -1)
+        val inFile = { pos: Int -> parsed.tracks.any { it.index == pos } }
+        trackSelection = when {
+            !inFile(savedPrimary) -> fallbackTrack
+            inFile(savedSecond) && savedSecond != savedPrimary -> TrackSelection.Dual(savedPrimary, savedSecond)
+            else -> TrackSelection.Track(savedPrimary)
+        }
         visibleNotes = parsed.visibleNotes(trackSelection)
         binding.scoreView.trackSelection = trackSelection
         populateTrackSelector(parsed)
@@ -553,53 +562,16 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
 
     private fun populateTrackSelector(score: MidiScore) {
         if (score.tracks.size > 1) {
-            val items = score.tracks.map {
-                getString(R.string.track_item, it.index + 1, it.name?.takeIf { name -> name.isNotBlank() }
-                    ?: getString(R.string.track_unnamed))
+            // All is never presentable on the staff; normalize to the first track.
+            if (trackSelection is TrackSelection.All) {
+                val first = score.tracks.first().index
+                trackSelection = TrackSelection.Track(first)
+                visibleNotes = score.visibleNotes(trackSelection)
+                binding.scoreView.trackSelection = trackSelection
             }
-            val details = score.tracks.map {
-                when {
-                    it.noteCount == 0 -> getString(R.string.track_no_notes)
-                    it.pitchMin != null && it.pitchMax != null -> getString(R.string.track_details,
-                        it.noteCount, pitchName(spellMidiPitch(it.pitchMin, keySignatureAt(score, 0L), accidentalPreference), noteNaming),
-                        pitchName(spellMidiPitch(it.pitchMax, keySignatureAt(score, 0L), accidentalPreference), noteNaming))
-                    else -> getString(R.string.track_note_count, it.noteCount)
-                }
-            }
-            val adapter = object : ArrayAdapter<String>(this, R.layout.track_spinner_item, items) {
-                override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-                    return super.getView(position, convertView, parent).apply {
-                        contentDescription = "${items[position]}. ${details[position]}. ${getString(R.string.track_range_spelling_context)}"
-                    }
-                }
-
-                override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
-                    val row = convertView ?: layoutInflater.inflate(R.layout.track_spinner_dropdown_item, parent, false)
-                    row.findViewById<android.widget.TextView>(R.id.trackTitle).text = items[position]
-                    row.findViewById<android.widget.TextView>(R.id.trackDetails).text = details[position]
-                    row.contentDescription = "${items[position]}. ${details[position]}. ${getString(R.string.track_range_spelling_context)}"
-                    return row
-                }
-            }
-            // Guard must be set before the adapter assignment: setAdapter can
-            // fire onItemSelected synchronously (selection clamp) when the old
-            // selection index is out of range of the new adapter.
-            spinnerPopulating = true
-            binding.trackSpinner.adapter = adapter
-            val selection = when (val selected = trackSelection) {
-                TrackSelection.All -> {
-                    val firstTrack = score.tracks.first().index
-                    trackSelection = TrackSelection.Track(firstTrack)
-                    visibleNotes = score.visibleNotes(trackSelection)
-                    binding.scoreView.trackSelection = trackSelection
-                    firstTrack.coerceIn(0, items.lastIndex)
-                }
-                is TrackSelection.Track -> selected.index.coerceIn(0, items.lastIndex)
-            }
-            binding.trackSpinner.setSelection(selection, false)
-            binding.trackSpinner.contentDescription = getString(R.string.track_label) + ": " +
-                items[selection] + ". " + details[selection] + ". " + getString(R.string.track_range_spelling_context)
-            spinnerPopulating = false
+            binding.trackSelectionButton.text = trackSelectionSummary(score, trackSelection)
+            binding.trackSelectionButton.contentDescription = getString(R.string.track_selection_button) + ". " +
+                trackSelectionSummary(score, trackSelection)
             binding.trackSelectorRow.visibility = View.VISIBLE
         } else {
             if (score.tracks.size == 1) {
@@ -611,9 +583,121 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
                 visibleNotes = emptyList()
                 binding.scoreView.trackSelection = trackSelection
             }
-            binding.trackSpinner.adapter = null
             binding.trackSelectorRow.visibility = View.GONE
         }
+    }
+
+    private fun trackShortName(score: MidiScore, index: Int): String =
+        score.tracks.firstOrNull { it.index == index }?.name?.takeIf { name -> name.isNotBlank() }
+            ?: getString(R.string.track_unnamed)
+
+    private fun trackSelectionSummary(score: MidiScore, selection: TrackSelection): String = when (selection) {
+        TrackSelection.All -> getString(R.string.all_tracks)
+        is TrackSelection.Track -> trackShortName(score, selection.index)
+        is TrackSelection.Dual -> "${trackShortName(score, selection.first)} + ${trackShortName(score, selection.second)}"
+    }
+
+    private fun trackDialogContent(score: MidiScore, position: Int): Pair<String, String> {
+        val info = score.tracks[position]
+        val title = getString(R.string.track_item, info.index + 1,
+            info.name?.takeIf { name -> name.isNotBlank() } ?: getString(R.string.track_unnamed))
+        val details = when {
+            info.noteCount == 0 -> getString(R.string.track_no_notes)
+            info.pitchMin != null && info.pitchMax != null -> getString(R.string.track_details,
+                info.noteCount,
+                pitchName(spellMidiPitch(info.pitchMin, keySignatureAt(score, 0L), accidentalPreference), noteNaming),
+                pitchName(spellMidiPitch(info.pitchMax, keySignatureAt(score, 0L), accidentalPreference), noteNaming))
+            else -> getString(R.string.track_note_count, info.noteCount)
+        }
+        return title to details
+    }
+
+    private fun updateTrackRowDescription(row: View, title: String, details: String, checked: Boolean) {
+        row.contentDescription = title + ". " + details + ". " +
+            getString(if (checked) R.string.track_checked else R.string.track_not_checked)
+    }
+
+    /** Checklist dialog combining up to two tracks on one staff; applied only on Done. */
+    private fun showTrackSelectionDialog() {
+        val localScore = score ?: return
+        if (localScore.tracks.size < 2) return
+        var selected = when (val current = trackSelection) {
+            TrackSelection.All -> listOf(localScore.tracks.first().index)
+            is TrackSelection.Track -> listOf(current.index)
+            is TrackSelection.Dual -> listOf(current.first, current.second).distinct()
+        }.filter { track -> localScore.tracks.any { it.index == track } }
+        if (selected.isEmpty()) selected = listOf(localScore.tracks.first().index)
+
+        val list = object : LinearLayout(this) {
+            // Report full height so the ScrollView scrolls the entire track list.
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+            }
+        }.apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        val hint = TextView(this).apply {
+            text = getString(R.string.track_dialog_hint)
+            textSize = 12f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.muted))
+            val pad = (12f * resources.displayMetrics.density).toInt()
+            setPadding(pad, (12f * resources.displayMetrics.density).toInt(), pad, (4f * resources.displayMetrics.density).toInt())
+        }
+        list.addView(hint)
+        localScore.tracks.forEachIndexed { position, info ->
+            val (title, details) = trackDialogContent(localScore, position)
+            val row = layoutInflater.inflate(R.layout.track_selection_dialog_row, list, false)
+            val checkbox = row.findViewById<CheckBox>(R.id.dlgTrackCheckbox)
+            row.findViewById<TextView>(R.id.dlgTrackTitle).text = title
+            row.findViewById<TextView>(R.id.dlgTrackDetails).text = details
+            checkbox.isChecked = selected.contains(info.index)
+            row.setOnClickListener {
+                val wasChecked = checkbox.isChecked
+                val outcome = toggleTrackSelection(selected, info.index)
+                if (outcome.blocked) {
+                    Toast.makeText(this,
+                        getString(if (wasChecked) R.string.tracks_min_one else R.string.tracks_max_two),
+                        Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                selected = outcome.selected
+                checkbox.isChecked = selected.contains(info.index)
+                updateTrackRowDescription(row, title, details, checkbox.isChecked)
+            }
+            updateTrackRowDescription(row, title, details, checkbox.isChecked)
+            list.addView(row)
+        }
+        val container = ScrollView(this).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            addView(list)
+        }
+        val midiUri = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_SELECTED_MIDI, null)
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.track_dialog_title)
+            .setView(container)
+            .setNegativeButton(R.string.track_dialog_cancel, null)
+            .setPositiveButton(R.string.track_dialog_done) { _, _ ->
+                val next = when (selected.size) {
+                    1 -> TrackSelection.Track(selected[0])
+                    else -> TrackSelection.Dual(selected[0], selected.getOrElse(1) { selected[0] })
+                }
+                trackSelection = next
+                visibleNotes = localScore.visibleNotes(next)
+                binding.scoreView.trackSelection = next
+                binding.trackSelectionButton.text = trackSelectionSummary(localScore, next)
+                binding.trackSelectionButton.contentDescription = getString(R.string.track_selection_button) + ". " +
+                    trackSelectionSummary(localScore, next)
+                if (midiUri != null) {
+                    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+                        .putInt(trackPreference(midiUri), selected[0])
+                        .putInt(secondTrackPreference(midiUri), selected.getOrElse(1) { -1 })
+                        .apply()
+                }
+                updateUiFromTransport()
+            }
+            .show()
+        dialog.window?.decorView?.systemUiVisibility = window.decorView.systemUiVisibility
     }
 
     private fun configureNativeEngine() {
@@ -748,10 +832,11 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
             if (testAudioPlayer.state == TestAudioPlayer.State.Playing) R.drawable.ic_pause else R.drawable.ic_play)
         binding.compactTestPlayPauseButton.contentDescription = binding.testPlayPauseButton.text
         val hasTracks = binding.trackSelectorRow.visibility == View.VISIBLE
-        val summary = if (hasTracks) binding.trackSpinner.selectedItem?.toString() ?: binding.fileNameText.text.toString()
+        val summary = if (hasTracks) binding.trackSelectionButton.text.toString()
             else binding.fileNameText.text.toString()
         if (binding.compactTrackText.text.toString() != summary) binding.compactTrackText.text = summary
-        binding.compactTrackText.contentDescription = if (hasTracks) binding.trackSpinner.contentDescription else binding.fileNameText.contentDescription
+        binding.compactTrackText.contentDescription = if (hasTracks) binding.trackSelectionButton.contentDescription
+            else binding.fileNameText.contentDescription
     }
 
     private fun updateUiFromTransport() {
@@ -1112,6 +1197,7 @@ class MainActivity : AppCompatActivity(), Choreographer.FrameCallback, TestAudio
         private const val KEY_SELECTED_AUDIO = "selected_audio_uri"
         private const val KEY_SCORE_ZOOM = "score_horizontal_zoom"
         private const val KEY_TRACK_PREFIX = "selected_track_for_midi:"
+        private const val KEY_SECOND_TRACK_PREFIX = "selected_second_track_for_midi:"
         private const val MENU_NOTATION_LETTERS = 1
         private const val MENU_NOTATION_SOLFEGE = 2
         private const val MENU_SHOW_TEST_MODE = 3

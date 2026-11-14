@@ -1,0 +1,16 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:minHeight="56dp" android:orientation="horizontal" android:gravity="center_vertical"
+    android:paddingHorizontal="12dp" android:paddingVertical="8dp"
+    android:background="?android:attr/selectableItemBackground"
+    android:clickable="true" android:focusable="true">
+    <CheckBox android:id="@+id/dlgTrackCheckbox" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:clickable="false" android:focusable="false" />
+    <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+        android:orientation="vertical" android:layout_marginStart="12dp" android:gravity="center_vertical">
+        <TextView android:id="@+id/dlgTrackTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:maxLines="1" android:ellipsize="end" android:textSize="13sp" android:textColor="@color/ink" />
+        <TextView android:id="@+id/dlgTrackDetails" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:maxLines="1" android:ellipsize="end" android:textSize="12sp" android:textColor="@color/muted" />
+    </LinearLayout>
+</LinearLayout>

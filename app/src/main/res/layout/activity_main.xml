@@ -9,8 +9,8 @@
     <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
         <TextView android:id="@+id/fileNameText" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:ellipsize="middle" android:maxLines="1" android:text="@string/no_midi" android:textSize="16sp" android:textStyle="bold" />
         <LinearLayout android:id="@+id/trackSelectorRow" android:layout_width="0dp" android:layout_weight="1" android:layout_height="match_parent" android:gravity="center_vertical" android:visibility="gone">
-            <TextView android:id="@+id/trackLabelText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:labelFor="@id/trackSpinner" android:text="@string/track_label" android:textSize="12sp" />
-            <Spinner android:id="@+id/trackSpinner" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:contentDescription="@string/track_label" />
+            <TextView android:id="@+id/trackLabelText" android:layout_width="wrap_content" android:layout_height="wrap_content" android:labelFor="@id/trackSelectionButton" android:text="@string/track_label" android:textSize="12sp" />
+            <Button android:id="@+id/trackSelectionButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:gravity="center_vertical|start" android:textSize="13sp" android:contentDescription="@string/track_label" />
         </LinearLayout>
         <Button android:id="@+id/testModeButton" style="@style/Widget.TempoScore.QuietButton" android:layout_width="wrap_content" android:layout_height="48dp" android:text="@string/test_mode" android:visibility="gone" />
         <ImageButton android:id="@+id/settingsButton" android:layout_width="48dp" android:layout_height="48dp" android:background="?attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_settings" android:tint="@color/ink" android:contentDescription="@string/settings" />
